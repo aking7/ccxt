@@ -645,8 +645,10 @@ class bitfinex (Exchange):
             ohlcv[5],
         ]
 
-    async def fetch_ohlcv(self, symbol, timeframe='1m', since=None, limit=100, params={}):
+    async def fetch_ohlcv(self, symbol, timeframe='1m', since=None, limit=None, params={}):
         await self.load_markets()
+        if limit is None:
+            limit = 100
         if since is None:
             since = self.milliseconds() - self.parse_timeframe(timeframe) * limit * 1000
         market = self.market(symbol)
