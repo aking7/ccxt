@@ -12,8 +12,9 @@ module.exports = class bitfinex2 extends bitfinex {
         return this.deepExtend (super.describe (), {
             'id': 'bitfinex2',
             'name': 'Bitfinex v2',
-            'countries': 'VG',
+            'countries': [ 'VG' ],
             'version': 'v2',
+            'certified': false,
             // new metainfo interface
             'has': {
                 'CORS': true,
@@ -77,11 +78,11 @@ module.exports = class bitfinex2 extends bitfinex {
                         'book/{symbol}/P2',
                         'book/{symbol}/P3',
                         'book/{symbol}/R0',
-                        'stats1/{key}:{size}:{symbol}/{side}/{section}',
-                        'stats1/{key}:{size}:{symbol}/long/last',
-                        'stats1/{key}:{size}:{symbol}/long/hist',
-                        'stats1/{key}:{size}:{symbol}/short/last',
-                        'stats1/{key}:{size}:{symbol}/short/hist',
+                        'stats1/{key}:{size}:{symbol}:{side}/{section}',
+                        'stats1/{key}:{size}:{symbol}:long/last',
+                        'stats1/{key}:{size}:{symbol}:long/hist',
+                        'stats1/{key}:{size}:{symbol}:short/last',
+                        'stats1/{key}:{size}:{symbol}:short/hist',
                         'candles/trade:{timeframe}:{symbol}/{section}',
                         'candles/trade:{timeframe}:{symbol}/last',
                         'candles/trade:{timeframe}:{symbol}/hist',
@@ -167,9 +168,7 @@ module.exports = class bitfinex2 extends bitfinex {
     }
 
     getCurrencyId (code) {
-        let isFiat = this.isFiat (code);
-        let prefix = isFiat ? 'f' : 't';
-        return prefix + code;
+        return 'f' + code;
     }
 
     async fetchMarkets () {
@@ -233,16 +232,30 @@ module.exports = class bitfinex2 extends bitfinex {
             let total = balance[2];
             let available = balance[4];
             if (accountType === balanceType) {
-                if (currency[0] === 't')
+                let code = currency;
+                if (currency in this.currencies_by_id) {
+                    code = this.currencies_by_id[currency]['code'];
+                } else if (currency[0] === 't') {
                     currency = currency.slice (1);
-                let uppercase = currency.toUpperCase ();
-                uppercase = this.commonCurrencyCode (uppercase);
+                    code = currency.toUpperCase ();
+                    code = this.commonCurrencyCode (code);
+                } else {
+                    code = this.commonCurrencyCode (code);
+                }
                 let account = this.account ();
-                account['free'] = available;
                 account['total'] = total;
-                if (account['free'])
+                if (!available) {
+                    if (available === 0) {
+                        account['free'] = 0;
+                        account['used'] = total;
+                    } else {
+                        account['free'] = total;
+                    }
+                } else {
+                    account['free'] = available;
                     account['used'] = account['total'] - account['free'];
-                result[uppercase] = account;
+                }
+                result[code] = account;
             }
         }
         return this.parseBalance (result);
@@ -298,7 +311,7 @@ module.exports = class bitfinex2 extends bitfinex {
             'last': last,
             'previousClose': undefined,
             'change': ticker[length - 6],
-            'percentage': ticker[length - 5],
+            'percentage': ticker[length - 5] * 100,
             'average': undefined,
             'baseVolume': ticker[length - 3],
             'quoteVolume': undefined,

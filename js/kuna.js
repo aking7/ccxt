@@ -12,7 +12,7 @@ module.exports = class kuna extends acx {
         return this.deepExtend (super.describe (), {
             'id': 'kuna',
             'name': 'Kuna',
-            'countries': 'UA',
+            'countries': [ 'UA' ],
             'rateLimit': 1000,
             'version': 'v2',
             'has': {
@@ -123,7 +123,7 @@ module.exports = class kuna extends acx {
     }
 
     async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        if (!symbol)
+        if (typeof symbol === 'undefined')
             throw new ExchangeError (this.id + ' fetchOpenOrders requires a symbol argument');
         await this.loadMarkets ();
         let market = this.market (symbol);
@@ -142,6 +142,11 @@ module.exports = class kuna extends acx {
         if (market)
             symbol = market['symbol'];
         let side = this.safeString (trade, 'side');
+        let sideMap = {
+            'ask': 'sell',
+            'bid': 'buy',
+        };
+        side = sideMap[side];
         let cost = this.safeFloat (trade, 'funds');
         let order = this.safeString (trade, 'order_id');
         return {
@@ -150,7 +155,7 @@ module.exports = class kuna extends acx {
             'datetime': this.iso8601 (timestamp),
             'symbol': symbol,
             'type': undefined,
-            'side': side === 'ask' ? 'sell' : 'buy',
+            'side': side,
             'price': this.safeFloat (trade, 'price'),
             'amount': this.safeFloat (trade, 'volume'),
             'cost': cost,
@@ -169,7 +174,7 @@ module.exports = class kuna extends acx {
     }
 
     async fetchMyTrades (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        if (!symbol)
+        if (typeof symbol === 'undefined')
             throw new ExchangeError (this.id + ' fetchOpenOrders requires a symbol argument');
         await this.loadMarkets ();
         let market = this.market (symbol);

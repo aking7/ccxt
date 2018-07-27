@@ -19,6 +19,7 @@ class exmo extends Exchange {
             'has' => array (
                 'CORS' => false,
                 'fetchClosedOrders' => 'emulated',
+                'fetchDepositAddress' => true,
                 'fetchOpenOrders' => true,
                 'fetchOrder' => 'emulated',
                 'fetchOrders' => 'emulated',
@@ -31,7 +32,8 @@ class exmo extends Exchange {
             'urls' => array (
                 'logo' => 'https://user-images.githubusercontent.com/1294454/27766491-1b0ea956-5eda-11e7-9225-40d67b481b8d.jpg',
                 'api' => 'https://api.exmo.com',
-                'www' => 'https://exmo.me/?ref=131685',
+                'www' => 'https://exmo.me',
+                'referral' => 'https://exmo.me/?ref=131685',
                 'doc' => array (
                     'https://exmo.me/en/api_doc?ref=131685',
                     'https://github.com/exmo-dev/exmo_api_lib/tree/master/nodejs',
@@ -183,7 +185,7 @@ class exmo extends Exchange {
     public function fetch_order_books ($symbols = null, $params = array ()) {
         $this->load_markets();
         $ids = null;
-        if (!$symbols) {
+        if ($symbols === null) {
             $ids = implode (',', $this->ids);
             // max URL length is 2083 $symbols, including http schema, hostname, tld, etc...
             if (strlen ($ids) > 2048) {
@@ -401,8 +403,8 @@ class exmo extends Exchange {
                         'filled' => $order['amount'],
                         'remaining' => 0.0,
                     ));
-                    if ($order['cost'] == null) {
-                        if ($order['filled'] != null)
+                    if ($order['cost'] === null) {
+                        if ($order['filled'] !== null)
                             $order['cost'] = $order['filled'] * $order['price'];
                     }
                     $this->orders[$id] = $order;
@@ -542,6 +544,29 @@ class exmo extends Exchange {
         );
     }
 
+    public function fetch_deposit_address ($code, $params = array ()) {
+        $this->load_markets();
+        $response = $this->privatePostDepositAddress ($params);
+        $depositAddress = $this->safe_string($response, $code);
+        $address = null;
+        $tag = null;
+        if ($depositAddress) {
+            $addressAndTag = explode (',', $depositAddress);
+            $address = $addressAndTag[0];
+            $numParts = is_array ($addressAndTag) ? count ($addressAndTag) : 0;
+            if ($numParts > 1) {
+                $tag = $addressAndTag[1];
+            }
+        }
+        $this->check_address($address);
+        return array (
+            'currency' => $code,
+            'address' => $address,
+            'tag' => $tag,
+            'info' => $response,
+        );
+    }
+
     public function get_market_from_trades ($trades) {
         $tradesBySymbol = $this->index_by($trades, 'pair');
         $symbols = is_array ($tradesBySymbol) ? array_keys ($tradesBySymbol) : array ();
@@ -608,7 +633,7 @@ class exmo extends Exchange {
     }
 
     public function handle_errors ($httpCode, $reason, $url, $method, $headers, $body) {
-        if (gettype ($body) != 'string')
+        if (gettype ($body) !== 'string')
             return; // fallback to default error handler
         if (strlen ($body) < 2)
             return; // fallback to default error handler
@@ -619,7 +644,7 @@ class exmo extends Exchange {
                 //     array ("result":false,"error":"Error 50052 => Insufficient funds")
                 //
                 $success = $this->safe_value($response, 'result', false);
-                if (gettype ($success) == 'string') {
+                if (gettype ($success) === 'string') {
                     if (($success === 'true') || ($success === '1'))
                         $success = true;
                     else

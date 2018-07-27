@@ -13,7 +13,7 @@ class bitbank extends Exchange {
         return array_replace_recursive (parent::describe (), array (
             'id' => 'bitbank',
             'name' => 'bitbank',
-            'countries' => 'JP',
+            'countries' => array ( 'JP' ),
             'version' => 'v1',
             'has' => array (
                 'fetchOHLCV' => true,
@@ -50,8 +50,8 @@ class bitbank extends Exchange {
                         '{pair}/ticker',
                         '{pair}/depth',
                         '{pair}/transactions',
-                        '{pair}/transactions/{YYYYMMDD}',
-                        '{pair}/candlestick/array (candle-type)/{YYYYMMDD}',
+                        '{pair}/transactions/{yyyymmdd}',
+                        '{pair}/candlestick/{candletype}/{yyyymmdd}',
                     ),
                 ),
                 'private' => array (
@@ -118,6 +118,7 @@ class bitbank extends Exchange {
                 '50009' => '\\ccxt\\OrderNotFound',
                 '50010' => '\\ccxt\\OrderNotFound',
                 '60001' => '\\ccxt\\InsufficientFunds',
+                '60005' => '\\ccxt\\InvalidOrder',
             ),
         ));
     }
@@ -227,10 +228,10 @@ class bitbank extends Exchange {
         $date = $this->milliseconds ();
         $date = $this->ymd ($date);
         $date = explode ('-', $date);
-        $response = $this->publicGetPairCandlestickCandleTypeYYYYMMDD (array_merge (array (
+        $response = $this->publicGetPairCandlestickCandletypeYyyymmdd (array_merge (array (
             'pair' => $market['id'],
-            'candle-type' => $this->timeframes[$timeframe],
-            'YYYYMMDD' => implode ('', $date),
+            'candletype' => $this->timeframes[$timeframe],
+            'yyyymmdd' => implode ('', $date),
         ), $params));
         $ohlcv = $response['data']['candlestick'][0]['ohlcv'];
         return $this->parse_ohlcvs($ohlcv, $market, $timeframe, $since, $limit);
@@ -266,7 +267,7 @@ class bitbank extends Exchange {
         }
         if ($market)
             $symbol = $market['symbol'];
-        $timestamp = $this->safe_integer($order, 'ordered_at') * 1000;
+        $timestamp = $this->safe_integer($order, 'ordered_at');
         $price = $this->safe_float($order, 'price');
         $amount = $this->safe_float($order, 'start_amount');
         $filled = $this->safe_float($order, 'executed_amount');
@@ -285,6 +286,12 @@ class bitbank extends Exchange {
         } else {
             $status = 'open';
         }
+        $type = $this->safe_string($order, 'type');
+        if ($type !== null)
+            $type = strtolower ($type);
+        $side = $this->safe_string($order, 'side');
+        if ($side !== null)
+            $side = strtolower ($side);
         return array (
             'id' => $this->safe_string($order, 'order_id'),
             'datetime' => $this->iso8601 ($timestamp),
@@ -292,8 +299,8 @@ class bitbank extends Exchange {
             'lastTradeTimestamp' => null,
             'status' => $status,
             'symbol' => $symbol,
-            'type' => $order['type'],
-            'side' => $order['side'],
+            'type' => $type,
+            'side' => $side,
             'price' => $price,
             'cost' => $cost,
             'amount' => $amount,
@@ -350,9 +357,9 @@ class bitbank extends Exchange {
         $request = array (
             'pair' => $market['id'],
         );
-        if ($limit)
+        if ($limit !== null)
             $request['count'] = $limit;
-        if ($since)
+        if ($since !== null)
             $request['since'] = intval ($since / 1000);
         $orders = $this->privateGetUserSpotActiveOrders (array_merge ($request, $params));
         return $this->parse_orders($orders['data']['orders'], $market, $since, $limit);
@@ -381,15 +388,13 @@ class bitbank extends Exchange {
         $response = $this->privateGetUserWithdrawalAccount (array_merge (array (
             'asset' => $currency['id'],
         ), $params));
-        // Not sure about this if there could be more $accounts...
+        // Not sure about this if there could be more than one account...
         $accounts = $response['data']['accounts'];
         $address = $this->safe_string($accounts[0], 'address');
-        $status = $address ? 'ok' : 'none';
         return array (
             'currency' => $currency,
             'address' => $address,
             'tag' => null,
-            'status' => $status,
             'info' => $response,
         );
     }

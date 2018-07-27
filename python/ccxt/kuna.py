@@ -13,7 +13,7 @@ class kuna (acx):
         return self.deep_extend(super(kuna, self).describe(), {
             'id': 'kuna',
             'name': 'Kuna',
-            'countries': 'UA',
+            'countries': ['UA'],
             'rateLimit': 1000,
             'version': 'v2',
             'has': {
@@ -116,7 +116,7 @@ class kuna (acx):
         return self.fetch_order_book(symbol, limit, params)
 
     def fetch_open_orders(self, symbol=None, since=None, limit=None, params={}):
-        if not symbol:
+        if symbol is None:
             raise ExchangeError(self.id + ' fetchOpenOrders requires a symbol argument')
         self.load_markets()
         market = self.market(symbol)
@@ -134,6 +134,11 @@ class kuna (acx):
         if market:
             symbol = market['symbol']
         side = self.safe_string(trade, 'side')
+        sideMap = {
+            'ask': 'sell',
+            'bid': 'buy',
+        }
+        side = sideMap[side]
         cost = self.safe_float(trade, 'funds')
         order = self.safe_string(trade, 'order_id')
         return {
@@ -142,7 +147,7 @@ class kuna (acx):
             'datetime': self.iso8601(timestamp),
             'symbol': symbol,
             'type': None,
-            'side': side == 'sell' if 'ask' else 'buy',
+            'side': side,
             'price': self.safe_float(trade, 'price'),
             'amount': self.safe_float(trade, 'volume'),
             'cost': cost,
@@ -159,7 +164,7 @@ class kuna (acx):
         return self.parse_trades(response, market, since, limit)
 
     def fetch_my_trades(self, symbol=None, since=None, limit=None, params={}):
-        if not symbol:
+        if symbol is None:
             raise ExchangeError(self.id + ' fetchOpenOrders requires a symbol argument')
         self.load_markets()
         market = self.market(symbol)

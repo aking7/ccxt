@@ -19,6 +19,7 @@ from ccxt.base.errors import InsufficientFunds
 from ccxt.base.errors import InvalidOrder
 from ccxt.base.errors import OrderNotFound
 from ccxt.base.errors import DDoSProtection
+from ccxt.base.errors import ExchangeNotAvailable
 
 
 class liqui (Exchange):
@@ -27,7 +28,7 @@ class liqui (Exchange):
         return self.deep_extend(super(liqui, self).describe(), {
             'id': 'liqui',
             'name': 'Liqui',
-            'countries': 'UA',
+            'countries': ['UA'],
             'rateLimit': 3000,
             'version': '3',
             'userAgent': self.userAgents['chrome'],
@@ -132,8 +133,8 @@ class liqui (Exchange):
         markets = response['pairs']
         keys = list(markets.keys())
         result = []
-        for p in range(0, len(keys)):
-            id = keys[p]
+        for i in range(0, len(keys)):
+            id = keys[i]
             market = markets[id]
             base, quote = self.get_base_quote_from_market_id(id)
             symbol = base + '/' + quote
@@ -166,7 +167,6 @@ class liqui (Exchange):
                 'quote': quote,
                 'active': active,
                 'taker': market['fee'] / 100,
-                'lot': amountLimits['min'],
                 'precision': precision,
                 'limits': limits,
                 'info': market,
@@ -215,7 +215,7 @@ class liqui (Exchange):
     def fetch_order_books(self, symbols=None, params={}):
         self.load_markets()
         ids = None
-        if not symbols:
+        if symbols is None:
             ids = '-'.join(self.ids)
             # max URL length is 2083 symbols, including http schema, hostname, tld, etc...
             if len(ids) > 2048:
@@ -241,7 +241,7 @@ class liqui (Exchange):
     def parse_ticker(self, ticker, market=None):
         timestamp = ticker['updated'] * 1000
         symbol = None
-        if market:
+        if market is not None:
             symbol = market['symbol']
         last = self.safe_float(ticker, 'last')
         return {
@@ -270,7 +270,7 @@ class liqui (Exchange):
     def fetch_tickers(self, symbols=None, params={}):
         self.load_markets()
         ids = None
-        if not symbols:
+        if symbols is None:
             ids = '-'.join(self.ids)
             # max URL length is 2083 symbols, including http schema, hostname, tld, etc...
             if len(ids) > 2048:
@@ -317,7 +317,7 @@ class liqui (Exchange):
             marketId = trade['pair']
             market = self.markets_by_id[marketId]
         symbol = None
-        if market:
+        if market is not None:
             symbol = market['symbol']
         amount = trade['amount']
         type = 'limit'  # all trades are still limit trades
@@ -403,7 +403,6 @@ class liqui (Exchange):
 
     def cancel_order(self, id, symbol=None, params={}):
         self.load_markets()
-        response = None
         request = {}
         idKey = self.get_order_id_key()
         request[idKey] = id
@@ -430,9 +429,9 @@ class liqui (Exchange):
             status = self.parse_order_status(status)
         timestamp = int(order['timestamp_created']) * 1000
         symbol = None
-        if not market:
+        if market is None:
             market = self.markets_by_id[order['pair']]
-        if market:
+        if market is not None:
             symbol = market['symbol']
         remaining = None
         amount = None
@@ -682,6 +681,8 @@ class liqui (Exchange):
                     # in fact, we can use the same .exceptions with string-keys to save some loc here
                     if message == 'invalid api key':
                         raise AuthenticationError(feedback)
+                    elif message == 'invalid sign':
+                        raise AuthenticationError(feedback)
                     elif message == 'api key dont have trade permission':
                         raise AuthenticationError(feedback)
                     elif message.find('invalid parameter') >= 0:  # errorCode 0, returned on buy(symbol, 0, 0)
@@ -691,10 +692,10 @@ class liqui (Exchange):
                     elif message == 'Requests too often':
                         raise DDoSProtection(feedback)
                     elif message == 'not available':
-                        raise DDoSProtection(feedback)
+                        raise ExchangeNotAvailable(feedback)
                     elif message == 'data unavailable':
-                        raise DDoSProtection(feedback)
+                        raise ExchangeNotAvailable(feedback)
                     elif message == 'external service unavailable':
-                        raise DDoSProtection(feedback)
+                        raise ExchangeNotAvailable(feedback)
                     else:
-                        raise ExchangeError(self.id + ' unknown "error" value: ' + self.json(response))
+                        raise ExchangeError(feedback)

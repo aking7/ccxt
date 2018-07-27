@@ -6,6 +6,10 @@
 from ccxt.base.exchange import Exchange
 import json
 from ccxt.base.errors import ExchangeError
+from ccxt.base.errors import PermissionDenied
+from ccxt.base.errors import InsufficientFunds
+from ccxt.base.errors import InvalidOrder
+from ccxt.base.errors import InvalidNonce
 
 
 class cobinhood (Exchange):
@@ -14,18 +18,21 @@ class cobinhood (Exchange):
         return self.deep_extend(super(cobinhood, self).describe(), {
             'id': 'cobinhood',
             'name': 'COBINHOOD',
-            'countries': 'TW',
+            'countries': ['TW'],
             'rateLimit': 1000 / 10,
+            'version': 'v1',
             'has': {
                 'fetchCurrencies': True,
                 'fetchTickers': True,
                 'fetchOHLCV': True,
                 'fetchOpenOrders': True,
                 'fetchClosedOrders': True,
+                'fetchOrderTrades': True,
                 'fetchOrder': True,
                 'fetchDepositAddress': True,
                 'createDepositAddress': True,
-                'withdraw': True,
+                'withdraw': False,
+                'fetchMyTrades': True,
             },
             'requiredCredentials': {
                 'apiKey': True,
@@ -42,16 +49,13 @@ class cobinhood (Exchange):
                 '6h': '6h',
                 '12h': '12h',
                 '1d': '1D',
-                '7d': '7D',
-                '14d': '14D',
+                '1w': '7D',
+                '2w': '14D',
                 '1M': '1M',
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/35755576-dee02e5c-0878-11e8-989f-1595d80ba47f.jpg',
-                'api': {
-                    'web': 'https://api.cobinhood.com/v1',
-                    'ws': 'wss://feed.cobinhood.com',
-                },
+                'api': 'https://api.cobinhood.com',
                 'www': 'https://cobinhood.com',
                 'doc': 'https://cobinhood.github.io/api-public',
             },
@@ -97,9 +101,16 @@ class cobinhood (Exchange):
                         'trading/orders/{order_id}/trades',
                         'trading/orders',
                         'trading/order_history',
+                        'trading/trades',
                         'trading/trades/{trade_id}',
+                        'trading/volume',
                         'wallet/balances',
                         'wallet/ledger',
+                        'wallet/generic_deposits',
+                        'wallet/generic_deposits/{generic_deposit_id}',
+                        'wallet/generic_withdrawals',
+                        'wallet/generic_withdrawals/{generic_withdrawal_id}',
+                        # older endpoints
                         'wallet/deposit_addresses',
                         'wallet/withdrawal_addresses',
                         'wallet/withdrawals/{withdrawal_id}',
@@ -109,6 +120,7 @@ class cobinhood (Exchange):
                     ],
                     'post': [
                         'trading/orders',
+                        # older endpoints
                         'wallet/deposit_addresses',
                         'wallet/withdrawal_addresses',
                         'wallet/withdrawals',
@@ -128,6 +140,15 @@ class cobinhood (Exchange):
                 'amount': 8,
                 'price': 8,
             },
+            'exceptions': {
+                'insufficient_balance': InsufficientFunds,
+                'invalid_order_size': InvalidOrder,
+                'invalid_nonce': InvalidNonce,
+                'unauthorized_scope': PermissionDenied,
+            },
+            'commonCurrencies': {
+                'SMT': 'SocialMedia.Market',
+            },
         })
 
     def fetch_currencies(self, params={}):
@@ -144,7 +165,6 @@ class cobinhood (Exchange):
                 'code': code,
                 'name': currency['name'],
                 'active': True,
-                'status': 'ok',
                 'fiat': False,
                 'precision': self.precision_from_string(currency['min_unit']),
                 'limits': {
@@ -287,7 +307,7 @@ class cobinhood (Exchange):
         timestamp = trade['timestamp']
         price = self.safe_float(trade, 'price')
         amount = self.safe_float(trade, 'size')
-        cost = float(self.cost_to_precision(symbol, price * amount))
+        cost = price * amount
         side = trade['maker_side'] == 'sell' if 'bid' else 'buy'
         return {
             'info': trade,
@@ -368,40 +388,61 @@ class cobinhood (Exchange):
             result[currency] = account
         return self.parse_balance(result)
 
+    def parse_order_status(self, status):
+        statuses = {
+            'filled': 'closed',
+            'rejected': 'closed',
+            'partially_filled': 'open',
+            'pending_cancellation': 'open',
+            'pending_modification': 'open',
+            'open': 'open',
+            'new': 'open',
+            'queued': 'open',
+            'cancelled': 'canceled',
+            'triggered': 'triggered',
+        }
+        if status in statuses:
+            return statuses[status]
+        return status
+
     def parse_order(self, order, market=None):
         symbol = None
         if market is None:
             marketId = self.safe_string(order, 'trading_pair')
-            if marketId is None:
-                marketId = self.safe_string(order, 'trading_pair_id')
-            market = self.markets_by_id[marketId]
+            marketId = self.safe_string(order, 'trading_pair_id', marketId)
+            market = self.safe_value(self.markets_by_id, marketId)
         if market is not None:
             symbol = market['symbol']
-        timestamp = order['timestamp']
-        price = self.safe_float(order, 'price')
+        timestamp = self.safe_integer(order, 'timestamp')
+        price = self.safe_float(order, 'eq_price')
         amount = self.safe_float(order, 'size')
         filled = self.safe_float(order, 'filled')
-        remaining = amount - filled
-        # new, queued, open, partially_filled, filled, cancelled
-        status = order['state']
-        if status == 'filled':
-            status = 'closed'
-        elif status == 'cancelled':
-            status = 'canceled'
-        else:
-            status = 'open'
-        side = 'buy' if (order['side'] == 'bid') else 'sell'
+        remaining = None
+        cost = None
+        if amount is not None:
+            if filled is not None:
+                remaining = amount - filled
+            if filled is not None and price is not None:
+                cost = price * filled
+            elif price is not None:
+                cost = price * amount
+        status = self.parse_order_status(self.safe_string(order, 'state'))
+        side = self.safe_string(order, 'side')
+        if side == 'bid':
+            side = 'buy'
+        elif side == 'ask':
+            side = 'sell'
         return {
-            'id': order['id'],
+            'id': self.safe_string(order, 'id'),
             'datetime': self.iso8601(timestamp),
             'timestamp': timestamp,
             'lastTradeTimestamp': None,
             'status': status,
             'symbol': symbol,
-            'type': order['type'],  # market, limit, stop, stop_limit, trailing_stop, fill_or_kill
+            'type': self.safe_string(order, 'type'),  # market, limit, stop, stop_limit, trailing_stop, fill_or_kill
             'side': side,
             'price': price,
-            'cost': price * amount,
+            'cost': cost,
             'amount': amount,
             'filled': filled,
             'remaining': remaining,
@@ -432,7 +473,9 @@ class cobinhood (Exchange):
         response = self.privateDeleteTradingOrdersOrderId(self.extend({
             'order_id': id,
         }, params))
-        return response
+        return self.parse_order(self.extend(response, {
+            'id': id,
+        }))
 
     def fetch_order(self, id, symbol=None, params={}):
         self.load_markets()
@@ -449,13 +492,22 @@ class cobinhood (Exchange):
             return self.filter_by_symbol(orders, symbol)
         return orders
 
-    def fetch_order_trades(self, id, symbol=None, params={}):
+    def fetch_order_trades(self, id, symbol=None, since=None, limit=None, params={}):
         self.load_markets()
         response = self.privateGetTradingOrdersOrderIdTrades(self.extend({
             'order_id': id,
         }, params))
         market = None if (symbol is None) else self.market(symbol)
         return self.parse_trades(response['result']['trades'], market)
+
+    def fetch_my_trades(self, symbol=None, since=None, limit=None, params={}):
+        self.load_markets()
+        market = self.market(symbol)
+        request = {}
+        if symbol is not None:
+            request['trading_pair_id'] = market['id']
+        response = self.privateGetTradingTrades(self.extend(request, params))
+        return self.parse_trades(response['result']['trades'], market, since, limit)
 
     def create_deposit_address(self, code, params={}):
         self.load_markets()
@@ -468,7 +520,6 @@ class cobinhood (Exchange):
         return {
             'currency': code,
             'address': address,
-            'status': 'ok',
             'info': response,
         }
 
@@ -486,25 +537,11 @@ class cobinhood (Exchange):
         return {
             'currency': code,
             'address': address,
-            'status': 'ok',
-            'info': response,
-        }
-
-    def withdraw(self, code, amount, address, params={}):
-        self.load_markets()
-        currency = self.currency(code)
-        response = self.privatePostWalletWithdrawals(self.extend({
-            'currency': currency['id'],
-            'amount': amount,
-            'address': address,
-        }, params))
-        return {
-            'id': response['result']['withdrawal_id'],
             'info': response,
         }
 
     def sign(self, path, api='public', method='GET', params={}, headers=None, body=None):
-        url = self.urls['api']['web'] + '/' + self.implode_params(path, params)
+        url = self.urls['api'] + '/' + self.version + '/' + self.implode_params(path, params)
         query = self.omit(params, self.extract_params(path))
         headers = {}
         if api == 'private':
@@ -527,5 +564,18 @@ class cobinhood (Exchange):
         if body[0] != '{':
             raise ExchangeError(self.id + ' ' + body)
         response = json.loads(body)
-        message = self.safe_value(response['error'], 'error_code')
-        raise ExchangeError(self.id + ' ' + message)
+        feedback = self.id + ' ' + self.json(response)
+        errorCode = self.safe_value(response['error'], 'error_code')
+        if method == 'DELETE' or method == 'GET':
+            if errorCode == 'parameter_error':
+                if url.find('trading/orders/') >= 0:
+                    # Cobinhood returns vague "parameter_error" on fetchOrder() and cancelOrder() calls
+                    # for invalid order IDs as well as orders that are not "open"
+                    raise InvalidOrder(feedback)
+        exceptions = self.exceptions
+        if errorCode in exceptions:
+            raise exceptions[errorCode](feedback)
+        raise ExchangeError(feedback)
+
+    def nonce(self):
+        return self.milliseconds()

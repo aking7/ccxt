@@ -39,7 +39,17 @@ const {
 
 const { DECIMAL_PLACES } = functions.precisionConstants
 
-const defaultFetch = isNode ? require ('fetch-ponyfill') ().fetch : fetch
+const defaultFetch = typeof (fetch) === "undefined" ? require ('fetch-ponyfill') ().fetch : fetch
+
+// ----------------------------------------------------------------------------
+// web3 / 0x imports
+
+const Web3      = require ('web3')
+    , ethAbi    = require ('ethereumjs-abi')
+    , ethUtil   = require ('ethereumjs-util')
+    , BigNumber = require ('bignumber.js')
+    // we prefer bignumber.js over BN.js
+    // , BN        = require ('bn.js')
 
 const journal = undefined // isNode && require ('./journal') // stub until we get a better solution for Webpack and React
 
@@ -69,6 +79,7 @@ module.exports = class Exchange {
             'countries': undefined,
             'enableRateLimit': false,
             'rateLimit': 2000, // milliseconds = seconds * 1000
+            'certified': false,
             'has': {
                 'CORS': false,
                 'publicAPI': true,
@@ -100,6 +111,7 @@ module.exports = class Exchange {
                 'fetchTickers': false,
                 'fetchTrades': true,
                 'fetchTradingFees': false,
+                'fetchTradingLimits': false,
                 'withdraw': false,
             },
             'urls': {
@@ -111,12 +123,14 @@ module.exports = class Exchange {
             },
             'api': undefined,
             'requiredCredentials': {
-                'apiKey':   true,
-                'secret':   true,
-                'uid':      false,
-                'login':    false,
-                'password': false,
-                'twofa':    false, // 2-factor authentication (one-time password key)
+                'apiKey':     true,
+                'secret':     true,
+                'uid':        false,
+                'login':      false,
+                'password':   false,
+                'twofa':      false, // 2-factor authentication (one-time password key)
+                'privateKey': false, // a "0x"-prefixed hexstring private key for a wallet
+                'walletAddress': false, // the wallet address "0x"-prefixed hexstring
             },
             'markets': undefined, // to be filled manually or by fetchMarkets
             'currencies': {}, // to be filled manually or by fetchMarkets
@@ -156,10 +170,8 @@ module.exports = class Exchange {
 
         Object.assign (this, functions, { encode: string => string, decode: string => string })
 
-        if (isNode)
-            this.nodeVersion = process.version.match (/\d+\.\d+.\d+/)[0]
-
         // if (isNode) {
+        //     this.nodeVersion = process.version.match (/\d+\.\d+\.\d+/)[0]
         //     this.userAgent = {
         //         'User-Agent': 'ccxt/' + Exchange.ccxtVersion +
         //             ' (+https://github.com/ccxt/ccxt)' +
@@ -168,6 +180,7 @@ module.exports = class Exchange {
         // }
 
         this.options = {} // exchange-specific options, if any
+        this.fetchOptions = {} // fetch implementation options (JS only)
 
         this.userAgents = {
             'chrome': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.94 Safari/537.36',
@@ -180,15 +193,64 @@ module.exports = class Exchange {
         this.proxy = ''
         this.origin = '*' // CORS origin
 
-        this.iso8601          = timestamp => ((typeof timestamp === 'undefined') ? timestamp : new Date (timestamp).toISOString ())
-        this.parse8601        = x => Date.parse ((((x.indexOf ('+') >= 0) || (x.slice (-1) === 'Z')) ? x : (x + 'Z').replace (/\s(\d\d):/, 'T$1:')))
-        this.parseDate        = (x) => {
-            if (typeof x === 'undefined')
-                return x
-            return ((x.indexOf ('GMT') >= 0) ?
-                Date.parse (x) :
-                this.parse8601 (x))
+        this.iso8601 = (timestamp) => {
+            const _timestampNumber = parseInt (timestamp, 10);
+
+            // undefined, null and lots of nasty non-numeric values yield NaN
+            if (isNaN (_timestampNumber) || _timestampNumber < 0) {
+                return undefined;
+            }
+
+            // last line of defence
+            try {
+                return new Date (_timestampNumber).toISOString ();
+            } catch (e) {
+                return undefined;
+            }
         }
+
+        this.parse8601 = (x) => {
+            if (typeof x !== 'string' || !x) {
+                return undefined;
+            }
+
+            if (x.match (/^[0-9]+$/)) {
+                // a valid number in a string, not a date.
+                return undefined;
+            }
+
+            if (x.indexOf ('-') < 0 || x.indexOf (':') < 0) { // no date can be without a dash and a colon
+                return undefined;
+            }
+
+            // last line of defence
+            try {
+                const candidate = Date.parse (((x.indexOf ('+') >= 0) || (x.slice (-1) === 'Z')) ? x : (x + 'Z').replace (/\s(\d\d):/, 'T$1:'));
+                if (isNaN (candidate)) {
+                    return undefined;
+                }
+                return candidate;
+            } catch (e) {
+                return undefined;
+            }
+        }
+
+        this.parseDate = (x) => {
+            if (typeof x !== 'string' || !x) {
+                return undefined;
+            }
+
+            if (x.indexOf ('GMT') >= 0) {
+                try {
+                    return Date.parse (x);
+                } catch (e) {
+                    return undefined;
+                }
+            }
+
+            return this.parse8601 (x);
+        }
+
         this.microseconds     = () => now () * 1000 // TODO: utilize performance.now for that purpose
         this.seconds          = () => Math.floor (now () / 1000)
 
@@ -205,11 +267,13 @@ module.exports = class Exchange {
         this.userAgent        = undefined
         this.twofa            = false // two-factor authentication (2FA)
 
-        this.apiKey   = undefined
-        this.secret   = undefined
-        this.uid      = undefined
-        this.login    = undefined
-        this.password = undefined
+        this.apiKey        = undefined
+        this.secret        = undefined
+        this.uid           = undefined
+        this.login         = undefined
+        this.password      = undefined
+        this.privateKey    = undefined // a "0x"-prefixed hexstring private key for a wallet
+        this.walletAddress = undefined // a wallet address "0x"-prefixed hexstring
 
         this.balance    = {}
         this.orderbooks = {}
@@ -256,6 +320,10 @@ module.exports = class Exchange {
         if (this.debug && journal) {
             journal (() => this.journal, this, Object.keys (this.has))
         }
+
+        if (!this.web3) {
+            this.web3 = new Web3 (new Web3.providers.HttpProvider ())
+        }
     }
 
     defaults () {
@@ -288,14 +356,12 @@ module.exports = class Exchange {
 
         // check the address is not the same letter like 'aaaaa' nor too short nor has a space
         if ((unique (address).length === 1) || address.length < this.minFundingAddressLength || address.includes (' '))
-            throw new InvalidAddress (this.id + ' address is invalid or has less than ' + this.minFundingAddressLength.toString () + ' characters: "' + address.toString () + '"')
+            throw new InvalidAddress (this.id + ' address is invalid or has less than ' + this.minFundingAddressLength.toString () + ' characters: "' + this.json (address) + '"')
 
         return address
     }
 
     initRestRateLimiter () {
-
-        const fetchImplementation = this.fetchImplementation
 
         if (this.rateLimit === undefined)
             throw new Error (this.id + '.rateLimit property is not configured')
@@ -310,10 +376,14 @@ module.exports = class Exchange {
 
         this.throttle = throttle (this.tokenBucket)
 
-        this.executeRestRequest = function (url, method = 'GET', headers = undefined, body = undefined) {
+        this.executeRestRequest = (url, method = 'GET', headers = undefined, body = undefined) => {
+
+            // fetchImplementation cannot be called on this. in browsers:
+            // TypeError Failed to execute 'fetch' on 'Window': Illegal invocation
+            const fetchImplementation = this.fetchImplementation
 
             let promise =
-                fetchImplementation (url, { method, headers, body, 'agent': this.agent || null, timeout: this.timeout })
+                fetchImplementation (url, this.extend ({ method, headers, body, 'agent': this.agent || null, timeout: this.timeout }, this.fetchOptions))
                     .catch (e => {
                         if (isNode)
                             throw new ExchangeNotAvailable ([ this.id, method, url, e.type, e.message ].join (' '))
@@ -447,7 +517,7 @@ module.exports = class Exchange {
         }
     }
 
-    handleErrors (statusCode, statusText, url, method, requestHeaders, responseBody, json) {
+    handleErrors (statusCode, statusText, url, method, responseHeaders, responseBody, json) {
         // override me
     }
 
@@ -534,6 +604,7 @@ module.exports = class Exchange {
                 values.filter (market => 'base' in market)
                     .map (market => ({
                         id: market.baseId || market.base,
+                        numericId: (typeof market.baseNumericId !== 'undefined') ? market.baseNumericId : undefined,
                         code: market.base,
                         precision: market.precision ? (market.precision.base || market.precision.amount) : 8,
                     }))
@@ -541,6 +612,7 @@ module.exports = class Exchange {
                 values.filter (market => 'quote' in market)
                     .map (market => ({
                         id: market.quoteId || market.quote,
+                        numericId: (typeof market.quoteNumericId !== 'undefined') ? market.quoteNumericId : undefined,
                         code: market.quote,
                         precision: market.precision ? (market.precision.quote || market.precision.price) : 8,
                     }))
@@ -690,12 +762,22 @@ module.exports = class Exchange {
     }
 
     currencyId (commonCode) {
+
+        if (typeof this.currencies === 'undefined') {
+            throw new ExchangeError (this.id + ' currencies not loaded')
+        }
+
+        if (commonCode in this.currencies) {
+            return this.currencies[commonCode]['id'];
+        }
+
         let currencyIds = {}
         let distinct = Object.keys (this.commonCurrencies)
         for (let i = 0; i < distinct.length; i++) {
             let k = distinct[i]
             currencyIds[this.commonCurrencies[k]] = k
         }
+
         return this.safeString (currencyIds, commonCode, commonCode)
     }
 
@@ -880,18 +962,36 @@ module.exports = class Exchange {
         return this.fetchPartialBalance ('total', params)
     }
 
+    async loadTradingLimits (symbols = undefined, reload = false, params = {}) {
+        if (this.has['fetchTradingLimits']) {
+            if (reload || !('limitsLoaded' in this.options)) {
+                let response = await this.fetchTradingLimits (symbols);
+                let limits = response['limits'];
+                let keys = Object.keys (limits);
+                for (let i = 0; i < keys.length; i++) {
+                    let symbol = keys[i];
+                    this.markets[symbol] = this.deepExtend (this.markets[symbol], {
+                        'limits': limits[symbol],
+                    });
+                }
+                this.options['limitsLoaded'] = this.milliseconds ();
+            }
+        }
+        return this.markets;
+    }
+
     filterBySinceLimit (array, since = undefined, limit = undefined) {
-        if (typeof since !== 'undefined')
+        if (typeof since !== 'undefined' && since !== null)
             array = array.filter (entry => entry.timestamp >= since)
-        if (typeof limit !== 'undefined')
+        if (typeof limit !== 'undefined' && limit !== null)
             array = array.slice (0, limit)
         return array
     }
 
     filterBySymbolSinceLimit (array, symbol = undefined, since = undefined, limit = undefined) {
 
-        const symbolIsDefined = typeof symbol !== 'undefined'
-        const sinceIsDefined = typeof since !== 'undefined'
+        const symbolIsDefined = typeof symbol !== 'undefined' && symbol !== null
+        const sinceIsDefined = typeof since !== 'undefined' && since !== null
 
         // single-pass filter for both symbol and since
         if (symbolIsDefined || sinceIsDefined)
@@ -899,7 +999,7 @@ module.exports = class Exchange {
                 ((symbolIsDefined ? (entry.symbol === symbol)  : true) &&
                  (sinceIsDefined  ? (entry.timestamp >= since) : true)))
 
-        if (typeof limit !== 'undefined')
+        if (typeof limit !== 'undefined' && limit !== null)
             array = Object.values (array).slice (0, limit)
 
         return array
@@ -910,7 +1010,7 @@ module.exports = class Exchange {
         objects = Object.values (objects)
 
         // return all of them if no values were passed
-        if (typeof values === 'undefined')
+        if (typeof values === 'undefined' || values === null)
             return indexed ? indexBy (objects, key) : objects
 
         let result = []
@@ -1001,6 +1101,14 @@ module.exports = class Exchange {
         return this.createOrder (symbol, 'market', 'sell', amount, undefined, params)
     }
 
+    fromWei (amount, unit = 'ether') {
+        return (typeof amount === 'undefined') ? amount : parseFloat (this.web3.utils.fromWei ((new BigNumber (amount)).toFixed (), unit))
+    }
+
+    toWei (amount, unit = 'ether') {
+        return (typeof amount === 'undefined') ? amount : (this.web3.utils.toWei (this.numberToString (amount), unit))
+    }
+
     costToPrecision (symbol, cost) {
         return parseFloat (cost).toFixed (this.markets[symbol].precision.price)
     }
@@ -1038,14 +1146,26 @@ module.exports = class Exchange {
         }
     }
 
-    ymd (timestamp, infix = ' ') {
+    mdy (timestamp, infix = '-') {
+        infix = infix || ''
         let date = new Date (timestamp)
-        let Y = date.getUTCFullYear ()
+        let Y = date.getUTCFullYear ().toString ()
         let m = date.getUTCMonth () + 1
         let d = date.getUTCDate ()
-        m = m < 10 ? ('0' + m) : m
-        d = d < 10 ? ('0' + d) : d
-        return Y + '-' + m + '-' + d
+        m = m < 10 ? ('0' + m) : m.toString ()
+        d = d < 10 ? ('0' + d) : d.toString ()
+        return m + infix + d + infix + y
+    }
+
+    ymd (timestamp, infix = '-') {
+        infix = infix || ''
+        let date = new Date (timestamp)
+        let Y = date.getUTCFullYear ().toString ()
+        let m = date.getUTCMonth () + 1
+        let d = date.getUTCDate ()
+        m = m < 10 ? ('0' + m) : m.toString ()
+        d = d < 10 ? ('0' + d) : d.toString ()
+        return Y + infix + m + infix + d
     }
 
     ymdhms (timestamp, infix = ' ') {
@@ -1062,5 +1182,125 @@ module.exports = class Exchange {
         M = M < 10 ? ('0' + M) : M
         S = S < 10 ? ('0' + S) : S
         return Y + '-' + m + '-' + d + infix + H + ':' + M + ':' + S
+    }
+
+    // ------------------------------------------------------------------------
+    // web3 / 0x methods
+
+    decryptAccountFromJSON (json, password) {
+        return this.decryptAccount ((typeof json === 'string') ? JSON.parse (json) : json, password)
+    }
+
+    decryptAccount (key, password) {
+        return this.web3.eth.accounts.decrypt (key, password)
+    }
+
+    decryptAccountFromPrivateKey (privateKey) {
+        return this.web3.eth.accounts.privateKeyToAccount (privateKey)
+    }
+
+    getZeroExOrderHash (order) {
+        let unpacked = [
+            order['exchangeContractAddress'],                       // { value: order.exchangeContractAddress, type: types_1.SolidityTypes.Address },
+            order['maker'],                                         // { value: order.maker, type: types_1.SolidityTypes.Address },
+            order['taker'],                                         // { value: order.taker, type: types_1.SolidityTypes.Address },
+            order['makerTokenAddress'],                             // { value: order.makerTokenAddress, type: types_1.SolidityTypes.Address },
+            order['takerTokenAddress'],                             // { value: order.takerTokenAddress, type: types_1.SolidityTypes.Address },
+            order['feeRecipient'],                                  // { value: order.feeRecipient, type: types_1.SolidityTypes.Address },
+            new BigNumber (order['makerTokenAmount']).toFixed (),   // { value: bigNumberToBN(order.makerTokenAmount), type: types_1.SolidityTypes.Uint256, },
+            new BigNumber (order['takerTokenAmount']).toFixed (),   // { value: bigNumberToBN(order.takerTokenAmount), type: types_1.SolidityTypes.Uint256, },
+            new BigNumber (order['makerFee']).toFixed (),           // { value: bigNumberToBN(order.makerFee), type: types_1.SolidityTypes.Uint256, },
+            new BigNumber (order['takerFee']).toFixed (),           // { value: bigNumberToBN(order.takerFee), type: types_1.SolidityTypes.Uint256, },
+            new BigNumber (order['expirationUnixTimestampSec']).toFixed (), // { value: bigNumberToBN(order.expirationUnixTimestampSec), type: types_1.SolidityTypes.Uint256, },
+            new BigNumber (order['salt']).toFixed (),               // { value: bigNumberToBN(order.salt), type: types_1.SolidityTypes.Uint256 },
+        ]
+        let types = [
+            'address', // { value: order.exchangeContractAddress, type: types_1.SolidityTypes.Address },
+            'address', // { value: order.maker, type: types_1.SolidityTypes.Address },
+            'address', // { value: order.taker, type: types_1.SolidityTypes.Address },
+            'address', // { value: order.makerTokenAddress, type: types_1.SolidityTypes.Address },
+            'address', // { value: order.takerTokenAddress, type: types_1.SolidityTypes.Address },
+            'address', // { value: order.feeRecipient, type: types_1.SolidityTypes.Address },
+            'uint256', // { value: bigNumberToBN(order.makerTokenAmount), type: types_1.SolidityTypes.Uint256, },
+            'uint256', // { value: bigNumberToBN(order.takerTokenAmount), type: types_1.SolidityTypes.Uint256, },
+            'uint256', // { value: bigNumberToBN(order.makerFee), type: types_1.SolidityTypes.Uint256, },
+            'uint256', // { value: bigNumberToBN(order.takerFee), type: types_1.SolidityTypes.Uint256, },
+            'uint256', // { value: bigNumberToBN(order.expirationUnixTimestampSec), type: types_1.SolidityTypes.Uint256, },
+            'uint256', // { value: bigNumberToBN(order.salt), type: types_1.SolidityTypes.Uint256 },
+        ]
+        return '0x' + ethAbi.soliditySHA3 (types, unpacked).toString ('hex')
+    }
+
+    signZeroExOrder (order) {
+        const orderHash = this.getZeroExOrderHash (order);
+        const signature = this.signMessage (orderHash, this.privateKey);
+        // const signature2 = this.signMessage2 (orderHash, this.privateKey);
+        // const log = require ('ololog').unlimited;
+        // log ('----------------------------------------------------------')
+        // log.green ('messageHash:', messageHash)
+        // log.red ('orderHash:', orderHash);
+        // log.red ('signature1:', signature1)
+        // log.yellow ('signature2:', signature2)
+        return this.extend (order, {
+            'orderHash': orderHash,
+            'ecSignature': signature, // todo fix v if needed
+        })
+    }
+
+    hashMessage (message) {
+        return this.web3.eth.accounts.hashMessage (message)
+    }
+
+    // works with Node only
+    signHash (hash, privateKey) {
+        const signature = ethUtil.ecsign (Buffer.from (hash.slice (-64), 'hex'), Buffer.from (privateKey.slice (-64), 'hex'))
+        return {
+            v: signature.v, // integer
+            r: '0x' + signature.r.toString ('hex'), // '0x'-prefixed hex string
+            s: '0x' + signature.s.toString ('hex'), // '0x'-prefixed hex string
+        }
+    }
+
+    signMessage (message, privateKey) {
+        //
+        // The following comment is related to MetaMask, we use the upper type of signature prefix:
+        //
+        // z.ecSignOrderHashAsync ('0xcfdb0a485324ff37699b4c8557f6858f25916fc6fce5993b32fe018aea510b9f',
+        //                         '0x731fc101bbe102221c91c31ed0489f1ddfc439a3', {
+        //                              prefixType: 'ETH_SIGN',
+        //                              shouldAddPrefixBeforeCallingEthSign: true
+        //                          }).then ((e, r) => console.log (e,r))
+        //
+        //     {                            ↓
+        //         v: 28,
+        //         r: "0xea7a68268b47c48d5d7a4c900e6f9af0015bf70951b3db2f1d835c5d544aaec2",
+        //         s: "0x5d1db2a060c955c1fde4c967237b995c2361097405407b33c6046c8aeb3ccbdf"
+        //     }
+        //
+        // --------------------------------------------------------------------
+        //
+        // z.ecSignOrderHashAsync ('0xcfdb0a485324ff37699b4c8557f6858f25916fc6fce5993b32fe018aea510b9f',
+        //                         '0x731fc101bbe102221c91c31ed0489f1ddfc439a3', {
+        //                              prefixType: 'NONE',
+        //                              shouldAddPrefixBeforeCallingEthSign: true
+        //                          }).then ((e, r) => console.log (e,r))
+        //
+        //     {                            ↓
+        //         v: 27,
+        //         r: "0xc8c710022c57de4f529d448e9b40517dd9bfb49ff1eb245f5856664b865d14a6",
+        //         s: "0x0740bb21f4f094fbbdbafa903bb8f057f82e0c6e4fe65d19a1daed4ed97cd394"
+        //     }
+        //
+        const signature = this.decryptAccountFromPrivateKey (privateKey).sign (message, privateKey.slice (-64))
+        return {
+            v: parseInt (signature.v.slice (2), 16), // integer
+            r: signature.r, // '0x'-prefixed hex string
+            s: signature.s, // '0x'-prefixed hex string
+        }
+    }
+
+    signMessage2 (message, privateKey) {
+        // an alternative to signMessage using ethUtil (ethereumjs-util) instead of web3
+        return this.signHash (this.hashMessage (message), privateKey.slice (-64))
     }
 }

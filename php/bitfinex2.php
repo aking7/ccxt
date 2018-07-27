@@ -13,8 +13,9 @@ class bitfinex2 extends bitfinex {
         return array_replace_recursive (parent::describe (), array (
             'id' => 'bitfinex2',
             'name' => 'Bitfinex v2',
-            'countries' => 'VG',
+            'countries' => array ( 'VG' ),
             'version' => 'v2',
+            'certified' => false,
             // new metainfo interface
             'has' => array (
                 'CORS' => true,
@@ -78,11 +79,11 @@ class bitfinex2 extends bitfinex {
                         'book/{symbol}/P2',
                         'book/{symbol}/P3',
                         'book/{symbol}/R0',
-                        'stats1/{key}:{size}:{symbol}/{side}/{section}',
-                        'stats1/{key}:{size}:{symbol}/long/last',
-                        'stats1/{key}:{size}:{symbol}/long/hist',
-                        'stats1/{key}:{size}:{symbol}/short/last',
-                        'stats1/{key}:{size}:{symbol}/short/hist',
+                        'stats1/{key}:{size}:{symbol}:{side}/{section}',
+                        'stats1/{key}:{size}:{symbol}:long/last',
+                        'stats1/{key}:{size}:{symbol}:long/hist',
+                        'stats1/{key}:{size}:{symbol}:short/last',
+                        'stats1/{key}:{size}:{symbol}:short/hist',
                         'candles/trade:{timeframe}:{symbol}/{section}',
                         'candles/trade:{timeframe}:{symbol}/last',
                         'candles/trade:{timeframe}:{symbol}/hist',
@@ -168,9 +169,7 @@ class bitfinex2 extends bitfinex {
     }
 
     public function get_currency_id ($code) {
-        $isFiat = $this->is_fiat ($code);
-        $prefix = $isFiat ? 'f' : 't';
-        return $prefix . $code;
+        return 'f' . $code;
     }
 
     public function fetch_markets () {
@@ -234,16 +233,30 @@ class bitfinex2 extends bitfinex {
             $total = $balance[2];
             $available = $balance[4];
             if ($accountType === $balanceType) {
-                if ($currency[0] === 't')
+                $code = $currency;
+                if (is_array ($this->currencies_by_id) && array_key_exists ($currency, $this->currencies_by_id)) {
+                    $code = $this->currencies_by_id[$currency]['code'];
+                } else if ($currency[0] === 't') {
                     $currency = mb_substr ($currency, 1);
-                $uppercase = strtoupper ($currency);
-                $uppercase = $this->common_currency_code($uppercase);
+                    $code = strtoupper ($currency);
+                    $code = $this->common_currency_code($code);
+                } else {
+                    $code = $this->common_currency_code($code);
+                }
                 $account = $this->account ();
-                $account['free'] = $available;
                 $account['total'] = $total;
-                if ($account['free'])
+                if (!$available) {
+                    if ($available === 0) {
+                        $account['free'] = 0;
+                        $account['used'] = $total;
+                    } else {
+                        $account['free'] = $total;
+                    }
+                } else {
+                    $account['free'] = $available;
                     $account['used'] = $account['total'] - $account['free'];
-                $result[$uppercase] = $account;
+                }
+                $result[$code] = $account;
             }
         }
         return $this->parse_balance($result);
@@ -299,7 +312,7 @@ class bitfinex2 extends bitfinex {
             'last' => $last,
             'previousClose' => null,
             'change' => $ticker[$length - 6],
-            'percentage' => $ticker[$length - 5],
+            'percentage' => $ticker[$length - 5] * 100,
             'average' => null,
             'baseVolume' => $ticker[$length - 3],
             'quoteVolume' => null,

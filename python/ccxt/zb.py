@@ -29,7 +29,7 @@ class zb (Exchange):
         return self.deep_extend(super(zb, self).describe(), {
             'id': 'zb',
             'name': 'ZB',
-            'countries': 'CN',
+            'countries': ['CN'],
             'rateLimit': 1000,
             'version': 'v1',
             'has': {
@@ -91,6 +91,7 @@ class zb (Exchange):
                 'www': 'https://www.zb.com',
                 'doc': 'https://www.zb.com/i/developer',
                 'fees': 'https://www.zb.com/i/rate',
+                'referral': 'https://vip.zb.com/user/register?recommendCode=bn070u',
             },
             'api': {
                 'public': {
@@ -170,6 +171,9 @@ class zb (Exchange):
                     'maker': 0.2 / 100,
                     'taker': 0.2 / 100,
                 },
+            },
+            'commonCurrencies': {
+                'ENT': 'ENTCash',
             },
         })
 
@@ -366,10 +370,10 @@ class zb (Exchange):
         }
         order = self.extend(order, params)
         response = self.privateGetGetOrder(order)
-        return self.parse_order(response, None, True)
+        return self.parse_order(response, None)
 
     def fetch_orders(self, symbol=None, since=None, limit=50, params={}):
-        if not symbol:
+        if symbol is None:
             raise ExchangeError(self.id + 'fetchOrders requires a symbol parameter')
         self.load_markets()
         market = self.market(symbol)
@@ -392,7 +396,7 @@ class zb (Exchange):
         return self.parse_orders(response, market, since, limit)
 
     def fetch_open_orders(self, symbol=None, since=None, limit=10, params={}):
-        if not symbol:
+        if symbol is None:
             raise ExchangeError(self.id + 'fetchOpenOrders requires a symbol parameter')
         self.load_markets()
         market = self.market(symbol)
@@ -415,7 +419,7 @@ class zb (Exchange):
         return self.parse_orders(response, market, since, limit)
 
     def parse_order(self, order, market=None):
-        side = order['type'] == 'buy' if 1 else 'sell'
+        side = 'buy' if (order['type'] == 1) else 'sell'
         type = 'limit'  # market order is not availalbe in ZB
         timestamp = None
         createDateField = self.get_create_date_field()
@@ -428,7 +432,7 @@ class zb (Exchange):
         if market:
             symbol = market['symbol']
         price = order['price']
-        average = order['trade_price']
+        average = None
         filled = order['trade_amount']
         amount = order['total_amount']
         remaining = amount - filled
@@ -500,11 +504,20 @@ class zb (Exchange):
             return  # fallback to default error handler
         if body[0] == '{':
             response = json.loads(body)
+            feedback = self.id + ' ' + self.json(response)
             if 'code' in response:
                 code = self.safe_string(response, 'code')
-                message = self.id + ' ' + self.json(response)
                 if code in self.exceptions:
                     ExceptionClass = self.exceptions[code]
-                    raise ExceptionClass(message)
+                    raise ExceptionClass(feedback)
                 elif code != '1000':
-                    raise ExchangeError(message)
+                    raise ExchangeError(feedback)
+            # special case for {"result":false,"message":"服务端忙碌"}(a "Busy Server" reply)
+            result = self.safe_value(response, 'result')
+            if result is not None:
+                if not result:
+                    message = self.safe_string(response, 'message')
+                    if message == u'服务端忙碌':
+                        raise ExchangeNotAvailable(feedback)
+                    else:
+                        raise ExchangeError(feedback)

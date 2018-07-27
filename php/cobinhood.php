@@ -13,18 +13,21 @@ class cobinhood extends Exchange {
         return array_replace_recursive (parent::describe (), array (
             'id' => 'cobinhood',
             'name' => 'COBINHOOD',
-            'countries' => 'TW',
+            'countries' => array ( 'TW' ),
             'rateLimit' => 1000 / 10,
+            'version' => 'v1',
             'has' => array (
                 'fetchCurrencies' => true,
                 'fetchTickers' => true,
                 'fetchOHLCV' => true,
                 'fetchOpenOrders' => true,
                 'fetchClosedOrders' => true,
+                'fetchOrderTrades' => true,
                 'fetchOrder' => true,
                 'fetchDepositAddress' => true,
                 'createDepositAddress' => true,
-                'withdraw' => true,
+                'withdraw' => false,
+                'fetchMyTrades' => true,
             ),
             'requiredCredentials' => array (
                 'apiKey' => true,
@@ -41,16 +44,13 @@ class cobinhood extends Exchange {
                 '6h' => '6h',
                 '12h' => '12h',
                 '1d' => '1D',
-                '7d' => '7D',
-                '14d' => '14D',
+                '1w' => '7D',
+                '2w' => '14D',
                 '1M' => '1M',
             ),
             'urls' => array (
                 'logo' => 'https://user-images.githubusercontent.com/1294454/35755576-dee02e5c-0878-11e8-989f-1595d80ba47f.jpg',
-                'api' => array (
-                    'web' => 'https://api.cobinhood.com/v1',
-                    'ws' => 'wss://feed.cobinhood.com',
-                ),
+                'api' => 'https://api.cobinhood.com',
                 'www' => 'https://cobinhood.com',
                 'doc' => 'https://cobinhood.github.io/api-public',
             ),
@@ -96,9 +96,16 @@ class cobinhood extends Exchange {
                         'trading/orders/{order_id}/trades',
                         'trading/orders',
                         'trading/order_history',
+                        'trading/trades',
                         'trading/trades/{trade_id}',
+                        'trading/volume',
                         'wallet/balances',
                         'wallet/ledger',
+                        'wallet/generic_deposits',
+                        'wallet/generic_deposits/{generic_deposit_id}',
+                        'wallet/generic_withdrawals',
+                        'wallet/generic_withdrawals/{generic_withdrawal_id}',
+                        // older endpoints
                         'wallet/deposit_addresses',
                         'wallet/withdrawal_addresses',
                         'wallet/withdrawals/{withdrawal_id}',
@@ -108,6 +115,7 @@ class cobinhood extends Exchange {
                     ),
                     'post' => array (
                         'trading/orders',
+                        // older endpoints
                         'wallet/deposit_addresses',
                         'wallet/withdrawal_addresses',
                         'wallet/withdrawals',
@@ -127,6 +135,15 @@ class cobinhood extends Exchange {
                 'amount' => 8,
                 'price' => 8,
             ),
+            'exceptions' => array (
+                'insufficient_balance' => '\\ccxt\\InsufficientFunds',
+                'invalid_order_size' => '\\ccxt\\InvalidOrder',
+                'invalid_nonce' => '\\ccxt\\InvalidNonce',
+                'unauthorized_scope' => '\\ccxt\\PermissionDenied',
+            ),
+            'commonCurrencies' => array (
+                'SMT' => 'SocialMedia.Market',
+            ),
         ));
     }
 
@@ -144,7 +161,6 @@ class cobinhood extends Exchange {
                 'code' => $code,
                 'name' => $currency['name'],
                 'active' => true,
-                'status' => 'ok',
                 'fiat' => false,
                 'precision' => $this->precision_from_string($currency['min_unit']),
                 'limits' => array (
@@ -297,7 +313,7 @@ class cobinhood extends Exchange {
         $timestamp = $trade['timestamp'];
         $price = $this->safe_float($trade, 'price');
         $amount = $this->safe_float($trade, 'size');
-        $cost = floatval ($this->cost_to_precision($symbol, $price * $amount));
+        $cost = $price * $amount;
         $side = $trade['maker_side'] === 'bid' ? 'sell' : 'buy';
         return array (
             'info' => $trade,
@@ -384,42 +400,67 @@ class cobinhood extends Exchange {
         return $this->parse_balance($result);
     }
 
+    public function parse_order_status ($status) {
+        $statuses = array (
+            'filled' => 'closed',
+            'rejected' => 'closed',
+            'partially_filled' => 'open',
+            'pending_cancellation' => 'open',
+            'pending_modification' => 'open',
+            'open' => 'open',
+            'new' => 'open',
+            'queued' => 'open',
+            'cancelled' => 'canceled',
+            'triggered' => 'triggered',
+        );
+        if (is_array ($statuses) && array_key_exists ($status, $statuses))
+            return $statuses[$status];
+        return $status;
+    }
+
     public function parse_order ($order, $market = null) {
         $symbol = null;
         if ($market === null) {
             $marketId = $this->safe_string($order, 'trading_pair');
-            if ($marketId === null)
-                $marketId = $this->safe_string($order, 'trading_pair_id');
-            $market = $this->markets_by_id[$marketId];
+            $marketId = $this->safe_string($order, 'trading_pair_id', $marketId);
+            $market = $this->safe_value($this->markets_by_id, $marketId);
         }
         if ($market !== null)
             $symbol = $market['symbol'];
-        $timestamp = $order['timestamp'];
-        $price = $this->safe_float($order, 'price');
+        $timestamp = $this->safe_integer($order, 'timestamp');
+        $price = $this->safe_float($order, 'eq_price');
         $amount = $this->safe_float($order, 'size');
         $filled = $this->safe_float($order, 'filled');
-        $remaining = $amount - $filled;
-        // new, queued, open, partially_filled, $filled, cancelled
-        $status = $order['state'];
-        if ($status === 'filled') {
-            $status = 'closed';
-        } else if ($status === 'cancelled') {
-            $status = 'canceled';
-        } else {
-            $status = 'open';
+        $remaining = null;
+        $cost = null;
+        if ($amount !== null) {
+            if ($filled !== null) {
+                $remaining = $amount - $filled;
+            }
+            if ($filled !== null && $price !== null) {
+                $cost = $price * $filled;
+            } else if ($price !== null) {
+                $cost = $price * $amount;
+            }
         }
-        $side = ($order['side'] === 'bid') ? 'buy' : 'sell';
+        $status = $this->parse_order_status($this->safe_string($order, 'state'));
+        $side = $this->safe_string($order, 'side');
+        if ($side === 'bid') {
+            $side = 'buy';
+        } else if ($side === 'ask') {
+            $side = 'sell';
+        }
         return array (
-            'id' => $order['id'],
+            'id' => $this->safe_string($order, 'id'),
             'datetime' => $this->iso8601 ($timestamp),
             'timestamp' => $timestamp,
             'lastTradeTimestamp' => null,
             'status' => $status,
             'symbol' => $symbol,
-            'type' => $order['type'], // $market, limit, stop, stop_limit, trailing_stop, fill_or_kill
+            'type' => $this->safe_string($order, 'type'), // $market, limit, stop, stop_limit, trailing_stop, fill_or_kill
             'side' => $side,
             'price' => $price,
-            'cost' => $price * $amount,
+            'cost' => $cost,
             'amount' => $amount,
             'filled' => $filled,
             'remaining' => $remaining,
@@ -452,7 +493,9 @@ class cobinhood extends Exchange {
         $response = $this->privateDeleteTradingOrdersOrderId (array_merge (array (
             'order_id' => $id,
         ), $params));
-        return $response;
+        return $this->parse_order(array_merge ($response, array (
+            'id' => $id,
+        )));
     }
 
     public function fetch_order ($id, $symbol = null, $params = array ()) {
@@ -472,13 +515,24 @@ class cobinhood extends Exchange {
         return $orders;
     }
 
-    public function fetch_order_trades ($id, $symbol = null, $params = array ()) {
+    public function fetch_order_trades ($id, $symbol = null, $since = null, $limit = null, $params = array ()) {
         $this->load_markets();
         $response = $this->privateGetTradingOrdersOrderIdTrades (array_merge (array (
             'order_id' => $id,
         ), $params));
         $market = ($symbol === null) ? null : $this->market ($symbol);
         return $this->parse_trades($response['result']['trades'], $market);
+    }
+
+    public function fetch_my_trades ($symbol = null, $since = null, $limit = null, $params = array ()) {
+        $this->load_markets();
+        $market = $this->market ($symbol);
+        $request = array ();
+        if ($symbol !== null) {
+            $request['trading_pair_id'] = $market['id'];
+        }
+        $response = $this->privateGetTradingTrades (array_merge ($request, $params));
+        return $this->parse_trades($response['result']['trades'], $market, $since, $limit);
     }
 
     public function create_deposit_address ($code, $params = array ()) {
@@ -492,7 +546,6 @@ class cobinhood extends Exchange {
         return array (
             'currency' => $code,
             'address' => $address,
-            'status' => 'ok',
             'info' => $response,
         );
     }
@@ -512,27 +565,12 @@ class cobinhood extends Exchange {
         return array (
             'currency' => $code,
             'address' => $address,
-            'status' => 'ok',
-            'info' => $response,
-        );
-    }
-
-    public function withdraw ($code, $amount, $address, $params = array ()) {
-        $this->load_markets();
-        $currency = $this->currency ($code);
-        $response = $this->privatePostWalletWithdrawals (array_merge (array (
-            'currency' => $currency['id'],
-            'amount' => $amount,
-            'address' => $address,
-        ), $params));
-        return array (
-            'id' => $response['result']['withdrawal_id'],
             'info' => $response,
         );
     }
 
     public function sign ($path, $api = 'public', $method = 'GET', $params = array (), $headers = null, $body = null) {
-        $url = $this->urls['api']['web'] . '/' . $this->implode_params($path, $params);
+        $url = $this->urls['api'] . '/' . $this->version . '/' . $this->implode_params($path, $params);
         $query = $this->omit ($params, $this->extract_params($path));
         $headers = array ();
         if ($api === 'private') {
@@ -560,7 +598,25 @@ class cobinhood extends Exchange {
             throw new ExchangeError ($this->id . ' ' . $body);
         }
         $response = json_decode ($body, $as_associative_array = true);
-        $message = $this->safe_value($response['error'], 'error_code');
-        throw new ExchangeError ($this->id . ' ' . $message);
+        $feedback = $this->id . ' ' . $this->json ($response);
+        $errorCode = $this->safe_value($response['error'], 'error_code');
+        if ($method === 'DELETE' || $method === 'GET') {
+            if ($errorCode === 'parameter_error') {
+                if (mb_strpos ($url, 'trading/orders/') !== false) {
+                    // Cobinhood returns vague "parameter_error" on fetchOrder() and cancelOrder() calls
+                    // for invalid order IDs as well as orders that are not "open"
+                    throw new InvalidOrder ($feedback);
+                }
+            }
+        }
+        $exceptions = $this->exceptions;
+        if (is_array ($exceptions) && array_key_exists ($errorCode, $exceptions)) {
+            throw new $exceptions[$errorCode] ($feedback);
+        }
+        throw new ExchangeError ($feedback);
+    }
+
+    public function nonce () {
+        return $this->milliseconds ();
     }
 }

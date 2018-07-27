@@ -3,7 +3,7 @@
 //  ---------------------------------------------------------------------------
 
 const Exchange = require ('./base/Exchange');
-const { ExchangeError, InsufficientFunds, InvalidOrder, OrderNotFound, AuthenticationError } = require ('./base/errors');
+const { ExchangeError, DDoSProtection, InsufficientFunds, InvalidOrder, OrderNotFound, AuthenticationError } = require ('./base/errors');
 
 //  ---------------------------------------------------------------------------
 
@@ -44,8 +44,9 @@ module.exports = class okcoinusd extends Exchange {
             'api': {
                 'web': {
                     'get': [
-                        'markets/currencies',
-                        'markets/products',
+                        'spot/markets/currencies',
+                        'spot/markets/products',
+                        'spot/markets/tickers',
                     ],
                 },
                 'public': {
@@ -78,6 +79,7 @@ module.exports = class okcoinusd extends Exchange {
                         'cancel_order',
                         'cancel_otc_order',
                         'cancel_withdraw',
+                        'funds_transfer',
                         'future_batch_trade',
                         'future_cancel',
                         'future_devolve',
@@ -102,6 +104,7 @@ module.exports = class okcoinusd extends Exchange {
                         'trade',
                         'trade_history',
                         'trade_otc_order',
+                        'wallet_info',
                         'withdraw',
                         'withdraw_info',
                         'unrepayments_info',
@@ -129,37 +132,53 @@ module.exports = class okcoinusd extends Exchange {
                 },
             },
             'exceptions': {
-                '1009': OrderNotFound, // for spot markets, cancelling closed order
-                '1051': OrderNotFound, // for spot markets, cancelling "just closed" order
-                '20015': OrderNotFound, // for future markets
+                // see https://github.com/okcoin-okex/API-docs-OKEx.com/blob/master/API-For-Spot-EN/Error%20Code%20For%20Spot.md
+                '10000': ExchangeError, // "Required field, can not be null"
+                '10001': DDoSProtection, // "Request frequency too high to exceed the limit allowed"
+                '10005': AuthenticationError, // "'SecretKey' does not exist"
+                '10006': AuthenticationError, // "'Api_key' does not exist"
+                '10007': AuthenticationError, // "Signature does not match"
+                '1002': InsufficientFunds, // "The transaction amount exceed the balance"
+                '1003': InvalidOrder, // "The transaction amount is less than the minimum requirement"
+                '1004': InvalidOrder, // "The transaction amount is less than 0"
                 '1013': InvalidOrder, // no contract type (PR-1101)
                 '1027': InvalidOrder, // createLimitBuyOrder(symbol, 0, 0): Incorrect parameter may exceeded limits
-                '1002': InsufficientFunds, // "The transaction amount exceed the balance"
                 '1050': InvalidOrder, // returned when trying to cancel an order that was filled or canceled previously
-                '10000': ExchangeError, // createLimitBuyOrder(symbol, undefined, undefined)
-                '10005': AuthenticationError, // bad apiKey
+                '1217': InvalidOrder, // "Order was sent at ±5% of the current market price. Please resend"
+                '10014': InvalidOrder, // "Order price must be between 0 and 1,000,000"
+                '1009': OrderNotFound, // for spot markets, cancelling closed order
+                '1019': OrderNotFound, // order closed? ("Undo order failed")
+                '1051': OrderNotFound, // for spot markets, cancelling "just closed" order
+                '10009': OrderNotFound, // for spot markets, "Order does not exist"
+                '20015': OrderNotFound, // for future markets
                 '10008': ExchangeError, // Illegal URL parameter
             },
             'options': {
+                'marketBuyPrice': false,
+                'defaultContractType': 'this_week', // next_week, quarter
                 'warnOnFetchOHLCVLimitArgument': true,
+                'fiats': [ 'USD', 'CNY' ],
+                'futures': {
+                    'BCH': true,
+                    'BTC': true,
+                    'BTG': true,
+                    'EOS': true,
+                    'ETC': true,
+                    'ETH': true,
+                    'LTC': true,
+                    'NEO': true,
+                    'QTUM': true,
+                    'USDT': true,
+                    'XUC': true,
+                },
             },
         });
     }
 
     async fetchMarkets () {
-        let response = await this.webGetMarketsProducts ();
+        let response = await this.webGetSpotMarketsProducts ();
         let markets = response['data'];
         let result = [];
-        const futureMarkets = {
-            'BCH/USD': true,
-            'BTC/USD': true,
-            'ETC/USD': true,
-            'ETH/USD': true,
-            'LTC/USD': true,
-            'XRP/USD': true,
-            'EOS/USD': true,
-            'BTG/USD': true,
-        };
         for (let i = 0; i < markets.length; i++) {
             let id = markets[i]['symbol'];
             let [ baseId, quoteId ] = id.split ('_');
@@ -176,6 +195,8 @@ module.exports = class okcoinusd extends Exchange {
             let minAmount = markets[i]['minTradeSize'];
             let minPrice = Math.pow (10, -precision['price']);
             let active = (markets[i]['online'] !== 0);
+            let baseNumericId = markets[i]['baseCurrency'];
+            let quoteNumericId = markets[i]['quoteCurrency'];
             let market = this.extend (this.fees['trading'], {
                 'id': id,
                 'symbol': symbol,
@@ -183,6 +204,8 @@ module.exports = class okcoinusd extends Exchange {
                 'quote': quote,
                 'baseId': baseId,
                 'quoteId': quoteId,
+                'baseNumericId': baseNumericId,
+                'quoteNumericId': quoteNumericId,
                 'info': markets[i],
                 'type': 'spot',
                 'spot': true,
@@ -206,18 +229,21 @@ module.exports = class okcoinusd extends Exchange {
                 },
             });
             result.push (market);
-            let futureQuote = (market['quote'] === 'USDT') ? 'USD' : market['quote'];
-            let futureSymbol = market['base'] + '/' + futureQuote;
-            if ((this.has['futures']) && (futureSymbol in futureMarkets)) {
-                result.push (this.extend (market, {
-                    'quote': 'USD',
-                    'symbol': market['base'] + '/USD',
-                    'id': market['id'].replace ('usdt', 'usd'),
-                    'quoteId': market['quoteId'].replace ('usdt', 'usd'),
-                    'type': 'future',
-                    'spot': false,
-                    'future': true,
-                }));
+            if ((this.has['futures']) && (market['base'] in this.options['futures'])) {
+                let fiats = this.options['fiats'];
+                for (let j = 0; j < fiats.length; j++) {
+                    const fiat = fiats[j];
+                    const lowercaseFiat = fiat.toLowerCase ();
+                    result.push (this.extend (market, {
+                        'quote': fiat,
+                        'symbol': market['base'] + '/' + fiat,
+                        'id': market['base'].toLowerCase () + '_' + lowercaseFiat,
+                        'quoteId': lowercaseFiat,
+                        'type': 'future',
+                        'spot': false,
+                        'future': true,
+                    }));
+                }
             }
         }
         return result;
@@ -234,7 +260,7 @@ module.exports = class okcoinusd extends Exchange {
             request['size'] = limit;
         if (market['future']) {
             method += 'Future';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
         }
         method += 'Depth';
         let orderbook = await this[method] (this.extend (request, params));
@@ -242,18 +268,44 @@ module.exports = class okcoinusd extends Exchange {
     }
 
     parseTicker (ticker, market = undefined) {
-        let timestamp = ticker['timestamp'];
+        //
+        //     {              buy:   "48.777300",
+        //                 change:   "-1.244500",
+        //       changePercentage:   "-2.47%",
+        //                  close:   "49.064000",
+        //            createdDate:    1531704852254,
+        //             currencyId:    527,
+        //                dayHigh:   "51.012500",
+        //                 dayLow:   "48.124200",
+        //                   high:   "51.012500",
+        //                inflows:   "0",
+        //                   last:   "49.064000",
+        //                    low:   "48.124200",
+        //             marketFrom:    627,
+        //                   name: {  },
+        //                   open:   "50.308500",
+        //               outflows:   "0",
+        //              productId:    527,
+        //                   sell:   "49.064000",
+        //                 symbol:   "zec_okb",
+        //                 volume:   "1049.092535"   }
+        //
+        let timestamp = this.safeInteger2 (ticker, 'timestamp', 'createdDate');
         let symbol = undefined;
-        if (!market) {
+        if (typeof market === 'undefined') {
             if ('symbol' in ticker) {
                 let marketId = ticker['symbol'];
                 if (marketId in this.markets_by_id)
                     market = this.markets_by_id[marketId];
             }
         }
-        if (market)
+        if (typeof market !== 'undefined') {
             symbol = market['symbol'];
+        }
         let last = this.safeFloat (ticker, 'last');
+        let open = this.safeFloat (ticker, 'open');
+        let change = this.safeFloat (ticker, 'change');
+        let percentage = this.safeFloat (ticker, 'changePercentage');
         return {
             'symbol': symbol,
             'timestamp': timestamp,
@@ -265,14 +317,14 @@ module.exports = class okcoinusd extends Exchange {
             'ask': this.safeFloat (ticker, 'sell'),
             'askVolume': undefined,
             'vwap': undefined,
-            'open': undefined,
+            'open': open,
             'close': last,
             'last': last,
             'previousClose': undefined,
-            'change': undefined,
-            'percentage': undefined,
+            'change': change,
+            'percentage': percentage,
             'average': undefined,
-            'baseVolume': this.safeFloat (ticker, 'vol'),
+            'baseVolume': this.safeFloat2 (ticker, 'vol', 'volume'),
             'quoteVolume': undefined,
             'info': ticker,
         };
@@ -287,7 +339,7 @@ module.exports = class okcoinusd extends Exchange {
         };
         if (market['future']) {
             method += 'Future';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
         }
         method += 'Ticker';
         let response = await this[method] (this.extend (request, params));
@@ -329,11 +381,26 @@ module.exports = class okcoinusd extends Exchange {
         };
         if (market['future']) {
             method += 'Future';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
         }
         method += 'Trades';
         let response = await this[method] (this.extend (request, params));
         return this.parseTrades (response, market, since, limit);
+    }
+
+    parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
+        let numElements = ohlcv.length;
+        let volumeIndex = (numElements > 6) ? 6 : 5;
+        return [
+            ohlcv[0], // timestamp
+            ohlcv[1], // Open
+            ohlcv[2], // High
+            ohlcv[3], // Low
+            ohlcv[4], // Close
+            // ohlcv[5], // quote volume
+            // ohlcv[6], // base volume
+            ohlcv[volumeIndex], // okex will return base volume in the 7th element for future markets
+        ];
     }
 
     async fetchOHLCV (symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
@@ -346,7 +413,7 @@ module.exports = class okcoinusd extends Exchange {
         };
         if (market['future']) {
             method += 'Future';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
         }
         method += 'Kline';
         if (typeof limit !== 'undefined') {
@@ -367,10 +434,17 @@ module.exports = class okcoinusd extends Exchange {
         let response = await this.privatePostUserinfo ();
         let balances = response['info']['funds'];
         let result = { 'info': response };
-        let ids = Object.keys (this.currencies_by_id);
+        let freeIds = Object.keys (balances['free']);
+        let freezedIds = Object.keys (balances['freezed']);
+        let ids = this.arrayConcat (freeIds, freezedIds);
         for (let i = 0; i < ids.length; i++) {
             let id = ids[i];
-            let code = this.currencies_by_id[id]['code'];
+            let code = id.toUpperCase ();
+            if (id in this.currencies_by_id) {
+                code = this.currencies_by_id[id]['code'];
+            } else {
+                code = this.commonCurrencyCode (code);
+            }
             let account = this.account ();
             account['free'] = this.safeFloat (balances['free'], id, 0.0);
             account['used'] = this.safeFloat (balances['freezed'], id, 0.0);
@@ -391,7 +465,7 @@ module.exports = class okcoinusd extends Exchange {
         if (market['future']) {
             method += 'Future';
             order = this.extend (order, {
-                'contract_type': 'this_week', // next_week, quarter
+                'contract_type': this.options['defaultContractType'], // this_week, next_week, quarter
                 'match_price': 0, // match best counter party price? 0 or 1, ignores price if 1
                 'lever_rate': 10, // leverage rate value: 10 or 20 (10 by default)
                 'price': price,
@@ -404,9 +478,19 @@ module.exports = class okcoinusd extends Exchange {
             } else {
                 order['type'] += '_market';
                 if (side === 'buy') {
-                    order['price'] = this.safeFloat (params, 'cost');
-                    if (!order['price'])
-                        throw new ExchangeError (this.id + ' market buy orders require an additional cost parameter, cost = price * amount');
+                    if (this.options['marketBuyPrice']) {
+                        if (typeof price === 'undefined') {
+                            // eslint-disable-next-line quotes
+                            throw new ExchangeError (this.id + " market buy orders require a price argument (the amount you want to spend or the cost of the order) when this.options['marketBuyPrice'] is true.");
+                        }
+                        order['price'] = price;
+                    } else {
+                        order['price'] = this.safeFloat (params, 'cost');
+                        if (!order['price']) {
+                            // eslint-disable-next-line quotes
+                            throw new ExchangeError (this.id + " market buy orders require an additional cost parameter, cost = price * amount. If you want to pass the cost of the market order (the amount you want to spend) in the price argument (the default " + this.id + " behaviour), set this.options['marketBuyPrice'] = true. It will effectively suppress this warning exception as well.");
+                        }
+                    }
                 } else {
                     order['amount'] = amount;
                 }
@@ -437,7 +521,7 @@ module.exports = class okcoinusd extends Exchange {
     }
 
     async cancelOrder (id, symbol = undefined, params = {}) {
-        if (!symbol)
+        if (typeof symbol === 'undefined')
             throw new ExchangeError (this.id + ' cancelOrder() requires a symbol argument');
         await this.loadMarkets ();
         let market = this.market (symbol);
@@ -448,7 +532,7 @@ module.exports = class okcoinusd extends Exchange {
         let method = 'privatePost';
         if (market['future']) {
             method += 'FutureCancel';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
         } else {
             method += 'CancelOrder';
         }
@@ -505,7 +589,7 @@ module.exports = class okcoinusd extends Exchange {
         }
         let status = this.parseOrderStatus (order['status']);
         let symbol = undefined;
-        if (!market) {
+        if (typeof market === 'undefined') {
             if ('symbol' in order)
                 if (order['symbol'] in this.markets_by_id)
                     market = this.markets_by_id[order['symbol']];
@@ -516,9 +600,12 @@ module.exports = class okcoinusd extends Exchange {
         let createDateField = this.getCreateDateField ();
         if (createDateField in order)
             timestamp = order[createDateField];
-        let amount = order['amount'];
-        let filled = order['deal_amount'];
+        let amount = this.safeFloat (order, 'amount');
+        let filled = this.safeFloat (order, 'deal_amount');
         let remaining = amount - filled;
+        if (type === 'market') {
+            remaining = 0;
+        }
         let average = this.safeFloat (order, 'avg_price');
         // https://github.com/ccxt/ccxt/issues/2452
         average = this.safeFloat (order, 'price_avg', average);
@@ -557,7 +644,7 @@ module.exports = class okcoinusd extends Exchange {
     }
 
     async fetchOrder (id, symbol = undefined, params = {}) {
-        if (!symbol)
+        if (typeof symbol === 'undefined')
             throw new ExchangeError (this.id + ' fetchOrder requires a symbol parameter');
         await this.loadMarkets ();
         let market = this.market (symbol);
@@ -571,7 +658,7 @@ module.exports = class okcoinusd extends Exchange {
         };
         if (market['future']) {
             method += 'Future';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
         }
         method += 'OrderInfo';
         let response = await this[method] (this.extend (request, params));
@@ -583,7 +670,7 @@ module.exports = class okcoinusd extends Exchange {
     }
 
     async fetchOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
-        if (!symbol)
+        if (typeof symbol === 'undefined')
             throw new ExchangeError (this.id + ' fetchOrders requires a symbol parameter');
         await this.loadMarkets ();
         let market = this.market (symbol);
@@ -594,7 +681,7 @@ module.exports = class okcoinusd extends Exchange {
         let order_id_in_params = ('order_id' in params);
         if (market['future']) {
             method += 'FutureOrdersInfo';
-            request['contract_type'] = 'this_week'; // next_week, quarter
+            request['contract_type'] = this.options['defaultContractType']; // this_week, next_week, quarter
             if (!order_id_in_params)
                 throw new ExchangeError (this.id + ' fetchOrders() requires order_id param for futures market ' + symbol + ' (a string of one or more order ids, comma-separated)');
         } else {
@@ -687,7 +774,9 @@ module.exports = class okcoinusd extends Exchange {
         let url = '/';
         if (api !== 'web')
             url += this.version + '/';
-        url += path + this.extension;
+        url += path;
+        if (api !== 'web')
+            url += this.extension;
         if (api === 'private') {
             this.checkRequiredCredentials ();
             let query = this.keysort (this.extend ({

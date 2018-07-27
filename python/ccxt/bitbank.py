@@ -19,7 +19,7 @@ class bitbank (Exchange):
         return self.deep_extend(super(bitbank, self).describe(), {
             'id': 'bitbank',
             'name': 'bitbank',
-            'countries': 'JP',
+            'countries': ['JP'],
             'version': 'v1',
             'has': {
                 'fetchOHLCV': True,
@@ -56,8 +56,8 @@ class bitbank (Exchange):
                         '{pair}/ticker',
                         '{pair}/depth',
                         '{pair}/transactions',
-                        '{pair}/transactions/{YYYYMMDD}',
-                        '{pair}/candlestick/{candle-type}/{YYYYMMDD}',
+                        '{pair}/transactions/{yyyymmdd}',
+                        '{pair}/candlestick/{candletype}/{yyyymmdd}',
                     ],
                 },
                 'private': {
@@ -124,6 +124,7 @@ class bitbank (Exchange):
                 '50009': OrderNotFound,
                 '50010': OrderNotFound,
                 '60001': InsufficientFunds,
+                '60005': InvalidOrder,
             },
         })
 
@@ -224,10 +225,10 @@ class bitbank (Exchange):
         date = self.milliseconds()
         date = self.ymd(date)
         date = date.split('-')
-        response = self.publicGetPairCandlestickCandleTypeYYYYMMDD(self.extend({
+        response = self.publicGetPairCandlestickCandletypeYyyymmdd(self.extend({
             'pair': market['id'],
-            'candle-type': self.timeframes[timeframe],
-            'YYYYMMDD': ''.join(date),
+            'candletype': self.timeframes[timeframe],
+            'yyyymmdd': ''.join(date),
         }, params))
         ohlcv = response['data']['candlestick'][0]['ohlcv']
         return self.parse_ohlcvs(ohlcv, market, timeframe, since, limit)
@@ -258,7 +259,7 @@ class bitbank (Exchange):
             market = self.marketsById[marketId]
         if market:
             symbol = market['symbol']
-        timestamp = self.safe_integer(order, 'ordered_at') * 1000
+        timestamp = self.safe_integer(order, 'ordered_at')
         price = self.safe_float(order, 'price')
         amount = self.safe_float(order, 'start_amount')
         filled = self.safe_float(order, 'executed_amount')
@@ -276,6 +277,12 @@ class bitbank (Exchange):
             status = 'canceled'
         else:
             status = 'open'
+        type = self.safe_string(order, 'type')
+        if type is not None:
+            type = type.lower()
+        side = self.safe_string(order, 'side')
+        if side is not None:
+            side = side.lower()
         return {
             'id': self.safe_string(order, 'order_id'),
             'datetime': self.iso8601(timestamp),
@@ -283,8 +290,8 @@ class bitbank (Exchange):
             'lastTradeTimestamp': None,
             'status': status,
             'symbol': symbol,
-            'type': order['type'],
-            'side': order['side'],
+            'type': type,
+            'side': side,
             'price': price,
             'cost': cost,
             'amount': amount,
@@ -337,9 +344,9 @@ class bitbank (Exchange):
         request = {
             'pair': market['id'],
         }
-        if limit:
+        if limit is not None:
             request['count'] = limit
-        if since:
+        if since is not None:
             request['since'] = int(since / 1000)
         orders = self.privateGetUserSpotActiveOrders(self.extend(request, params))
         return self.parse_orders(orders['data']['orders'], market, since, limit)
@@ -365,15 +372,13 @@ class bitbank (Exchange):
         response = self.privateGetUserWithdrawalAccount(self.extend({
             'asset': currency['id'],
         }, params))
-        # Not sure about self if there could be more accounts...
+        # Not sure about self if there could be more than one account...
         accounts = response['data']['accounts']
         address = self.safe_string(accounts[0], 'address')
-        status = 'ok' if address else 'none'
         return {
             'currency': currency,
             'address': address,
             'tag': None,
-            'status': status,
             'info': response,
         }
 

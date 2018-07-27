@@ -13,7 +13,7 @@ class gemini extends Exchange {
         return array_replace_recursive (parent::describe (), array (
             'id' => 'gemini',
             'name' => 'Gemini',
-            'countries' => 'US',
+            'countries' => array ( 'US' ),
             'rateLimit' => 1500, // 200 for private API
             'version' => 'v1',
             'has' => array (
@@ -23,9 +23,9 @@ class gemini extends Exchange {
                 'fetchBidsAsks' => false,
                 'fetchTickers' => false,
                 'fetchMyTrades' => true,
-                'fetchOrder' => false,
+                'fetchOrder' => true,
                 'fetchOrders' => false,
-                'fetchOpenOrders' => false,
+                'fetchOpenOrders' => true,
                 'fetchClosedOrders' => false,
                 'withdraw' => true,
             ),
@@ -68,6 +68,7 @@ class gemini extends Exchange {
                         'deposit/{currency}/newAddress',
                         'withdraw/{currency}',
                         'heartbeat',
+                        'transfers',
                     ),
                 ),
             ),
@@ -171,7 +172,7 @@ class gemini extends Exchange {
             'datetime' => $this->iso8601 ($timestamp),
             'symbol' => $market['symbol'],
             'type' => null,
-            'side' => $trade['type'],
+            'side' => strtolower ($trade['type']),
             'price' => $price,
             'cost' => $price * $amount,
             'amount' => $amount,
@@ -204,6 +205,87 @@ class gemini extends Exchange {
             $result[$currency] = $account;
         }
         return $this->parse_balance($result);
+    }
+
+    public function parse_order ($order, $market = null) {
+        $timestamp = $order['timestampms'];
+        $amount = $this->safe_float($order, 'original_amount');
+        $remaining = $this->safe_float($order, 'remaining_amount');
+        $filled = $this->safe_float($order, 'executed_amount');
+        $status = 'closed';
+        if ($order['is_live']) {
+            $status = 'open';
+        }
+        if ($order['is_cancelled']) {
+            $status = 'canceled';
+        }
+        $price = $this->safe_float($order, 'price');
+        $average = $this->safe_float($order, 'avg_execution_price');
+        if ($average !== 0.0) {
+            $price = $average; // prefer filling (execution) $price over the submitted $price
+        }
+        $cost = null;
+        if ($filled !== null) {
+            if ($average !== null) {
+                $cost = $filled * $average;
+            }
+        }
+        $type = $this->safe_string($order, 'type');
+        if ($type === 'exchange limit') {
+            $type = 'limit';
+        } else if ($type === 'market buy' || $type === 'market sell') {
+            $type = 'market';
+        } else {
+            $type = $order['type'];
+        }
+        $fee = null;
+        $symbol = null;
+        if ($market === null) {
+            $marketId = $this->safe_string($order, 'symbol');
+            if (is_array ($this->markets_by_id) && array_key_exists ($marketId, $this->markets_by_id)) {
+                $market = $this->markets_by_id[$marketId];
+            }
+        }
+        if ($market !== null) {
+            $symbol = $market['symbol'];
+        }
+        return array (
+            'id' => $order['order_id'],
+            'info' => $order,
+            'timestamp' => $timestamp,
+            'datetime' => $this->iso8601 ($timestamp),
+            'lastTradeTimestamp' => null,
+            'status' => $status,
+            'symbol' => $symbol,
+            'type' => $type,
+            'side' => strtolower ($order['side']),
+            'price' => $price,
+            'average' => $average,
+            'cost' => $cost,
+            'amount' => $amount,
+            'filled' => $filled,
+            'remaining' => $remaining,
+            'fee' => $fee,
+        );
+    }
+
+    public function fetch_order ($id, $symbol = null, $params = array ()) {
+        $this->load_markets();
+        $response = $this->privatePostOrderStatus (array_merge (array (
+            'order_id' => $id,
+        ), $params));
+        return $this->parse_order($response);
+    }
+
+    public function fetch_open_orders ($symbol = null, $since = null, $limit = null, $params = array ()) {
+        $this->load_markets();
+        $response = $this->privatePostOrders ($params);
+        $orders = $this->parse_orders($response, null, $since, $limit);
+        if ($symbol !== null) {
+            $market = $this->market ($symbol); // throws on non-existent $symbol
+            $orders = $this->filter_by_symbol($orders, $market['symbol']);
+        }
+        return $orders;
     }
 
     public function create_order ($symbol, $type, $side, $amount, $price = null, $params = array ()) {
@@ -240,7 +322,9 @@ class gemini extends Exchange {
             'symbol' => $market['id'],
         );
         if ($limit !== null)
-            $request['limit'] = $limit;
+            $request['limit_trades'] = $limit;
+        if ($since !== null)
+            $request['timestamp'] = intval ($since / 1000);
         $response = $this->privatePostMytrades (array_merge ($request, $params));
         return $this->parse_trades($response, $market, $since, $limit);
     }
@@ -306,7 +390,6 @@ class gemini extends Exchange {
         return array (
             'currency' => $code,
             'address' => $address,
-            'status' => 'ok',
             'info' => $response,
         );
     }

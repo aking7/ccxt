@@ -27,15 +27,17 @@ class okex extends okcoinusd {
                     'private' => 'https://www.okex.com/api',
                 ),
                 'www' => 'https://www.okex.com',
-                'doc' => 'https://www.okex.com/rest_getStarted.html',
+                'doc' => 'https://github.com/okcoin-okex/API-docs-OKEx.com',
                 'fees' => 'https://www.okex.com/fees.html',
             ),
             'commonCurrencies' => array (
+                'CAN' => 'Content And AD Network',
                 'FAIR' => 'FairGame',
-                'HMC' => 'Hi Mutual Society',
                 'MAG' => 'Maggie',
-                'NANO' => 'XRB',
                 'YOYO' => 'YOYOW',
+            ),
+            'options' => array (
+                'fetchTickersMethod' => 'fetch_tickers_from_api',
             ),
         ));
     }
@@ -75,7 +77,7 @@ class okex extends okcoinusd {
         return $markets;
     }
 
-    public function fetch_tickers ($symbols = null, $params = array ()) {
+    public function fetch_tickers_from_api ($symbols = null, $params = array ()) {
         $this->load_markets();
         $request = array ();
         $response = $this->publicGetTickers (array_merge ($request, $params));
@@ -95,5 +97,25 @@ class okex extends okcoinusd {
             $result[$symbol] = $ticker;
         }
         return $result;
+    }
+
+    public function fetch_tickers_from_web ($symbols = null, $params = array ()) {
+        $this->load_markets();
+        $request = array ();
+        $response = $this->webGetSpotMarketsTickers (array_merge ($request, $params));
+        $tickers = $response['data'];
+        $result = array ();
+        for ($i = 0; $i < count ($tickers); $i++) {
+            $ticker = $this->parse_ticker($tickers[$i]);
+            $symbol = $ticker['symbol'];
+            $result[$symbol] = $ticker;
+        }
+        return $result;
+    }
+
+    public function fetch_tickers ($symbols = null, $params = array ()) {
+        $method = $this->options['fetchTickersMethod'];
+        $response = $this->$method ($symbols, $params);
+        return $response;
     }
 }

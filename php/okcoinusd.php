@@ -45,8 +45,9 @@ class okcoinusd extends Exchange {
             'api' => array (
                 'web' => array (
                     'get' => array (
-                        'markets/currencies',
-                        'markets/products',
+                        'spot/markets/currencies',
+                        'spot/markets/products',
+                        'spot/markets/tickers',
                     ),
                 ),
                 'public' => array (
@@ -79,6 +80,7 @@ class okcoinusd extends Exchange {
                         'cancel_order',
                         'cancel_otc_order',
                         'cancel_withdraw',
+                        'funds_transfer',
                         'future_batch_trade',
                         'future_cancel',
                         'future_devolve',
@@ -103,6 +105,7 @@ class okcoinusd extends Exchange {
                         'trade',
                         'trade_history',
                         'trade_otc_order',
+                        'wallet_info',
                         'withdraw',
                         'withdraw_info',
                         'unrepayments_info',
@@ -130,37 +133,53 @@ class okcoinusd extends Exchange {
                 ),
             ),
             'exceptions' => array (
-                '1009' => '\\ccxt\\OrderNotFound', // for spot markets, cancelling closed order
-                '1051' => '\\ccxt\\OrderNotFound', // for spot markets, cancelling "just closed" order
-                '20015' => '\\ccxt\\OrderNotFound', // for future markets
+                // see https://github.com/okcoin-okex/API-docs-OKEx.com/blob/master/API-For-Spot-EN/Error%20Code%20For%20Spot.md
+                '10000' => '\\ccxt\\ExchangeError', // "Required field, can not be null"
+                '10001' => '\\ccxt\\DDoSProtection', // "Request frequency too high to exceed the limit allowed"
+                '10005' => '\\ccxt\\AuthenticationError', // "'SecretKey' does not exist"
+                '10006' => '\\ccxt\\AuthenticationError', // "'Api_key' does not exist"
+                '10007' => '\\ccxt\\AuthenticationError', // "Signature does not match"
+                '1002' => '\\ccxt\\InsufficientFunds', // "The transaction amount exceed the balance"
+                '1003' => '\\ccxt\\InvalidOrder', // "The transaction amount is less than the minimum requirement"
+                '1004' => '\\ccxt\\InvalidOrder', // "The transaction amount is less than 0"
                 '1013' => '\\ccxt\\InvalidOrder', // no contract type (PR-1101)
                 '1027' => '\\ccxt\\InvalidOrder', // createLimitBuyOrder(symbol, 0, 0) => Incorrect parameter may exceeded limits
-                '1002' => '\\ccxt\\InsufficientFunds', // "The transaction amount exceed the balance"
                 '1050' => '\\ccxt\\InvalidOrder', // returned when trying to cancel an order that was filled or canceled previously
-                '10000' => '\\ccxt\\ExchangeError', // createLimitBuyOrder(symbol, null, null)
-                '10005' => '\\ccxt\\AuthenticationError', // bad apiKey
+                '1217' => '\\ccxt\\InvalidOrder', // "Order was sent at ±5% of the current market price. Please resend"
+                '10014' => '\\ccxt\\InvalidOrder', // "Order price must be between 0 and 1,000,000"
+                '1009' => '\\ccxt\\OrderNotFound', // for spot markets, cancelling closed order
+                '1019' => '\\ccxt\\OrderNotFound', // order closed? ("Undo order failed")
+                '1051' => '\\ccxt\\OrderNotFound', // for spot markets, cancelling "just closed" order
+                '10009' => '\\ccxt\\OrderNotFound', // for spot markets, "Order does not exist"
+                '20015' => '\\ccxt\\OrderNotFound', // for future markets
                 '10008' => '\\ccxt\\ExchangeError', // Illegal URL parameter
             ),
             'options' => array (
+                'marketBuyPrice' => false,
+                'defaultContractType' => 'this_week', // next_week, quarter
                 'warnOnFetchOHLCVLimitArgument' => true,
+                'fiats' => array ( 'USD', 'CNY' ),
+                'futures' => array (
+                    'BCH' => true,
+                    'BTC' => true,
+                    'BTG' => true,
+                    'EOS' => true,
+                    'ETC' => true,
+                    'ETH' => true,
+                    'LTC' => true,
+                    'NEO' => true,
+                    'QTUM' => true,
+                    'USDT' => true,
+                    'XUC' => true,
+                ),
             ),
         ));
     }
 
     public function fetch_markets () {
-        $response = $this->webGetMarketsProducts ();
+        $response = $this->webGetSpotMarketsProducts ();
         $markets = $response['data'];
         $result = array ();
-        $futureMarkets = array (
-            'BCH/USD' => true,
-            'BTC/USD' => true,
-            'ETC/USD' => true,
-            'ETH/USD' => true,
-            'LTC/USD' => true,
-            'XRP/USD' => true,
-            'EOS/USD' => true,
-            'BTG/USD' => true,
-        );
         for ($i = 0; $i < count ($markets); $i++) {
             $id = $markets[$i]['symbol'];
             list ($baseId, $quoteId) = explode ('_', $id);
@@ -177,6 +196,8 @@ class okcoinusd extends Exchange {
             $minAmount = $markets[$i]['minTradeSize'];
             $minPrice = pow (10, -$precision['price']);
             $active = ($markets[$i]['online'] !== 0);
+            $baseNumericId = $markets[$i]['baseCurrency'];
+            $quoteNumericId = $markets[$i]['quoteCurrency'];
             $market = array_merge ($this->fees['trading'], array (
                 'id' => $id,
                 'symbol' => $symbol,
@@ -184,6 +205,8 @@ class okcoinusd extends Exchange {
                 'quote' => $quote,
                 'baseId' => $baseId,
                 'quoteId' => $quoteId,
+                'baseNumericId' => $baseNumericId,
+                'quoteNumericId' => $quoteNumericId,
                 'info' => $markets[$i],
                 'type' => 'spot',
                 'spot' => true,
@@ -207,18 +230,21 @@ class okcoinusd extends Exchange {
                 ),
             ));
             $result[] = $market;
-            $futureQuote = ($market['quote'] === 'USDT') ? 'USD' : $market['quote'];
-            $futureSymbol = $market['base'] . '/' . $futureQuote;
-            if (($this->has['futures']) && (is_array ($futureMarkets) && array_key_exists ($futureSymbol, $futureMarkets))) {
-                $result[] = array_merge ($market, array (
-                    'quote' => 'USD',
-                    'symbol' => $market['base'] . '/USD',
-                    'id' => str_replace ('usdt', 'usd', $market['id']),
-                    'quoteId' => str_replace ('usdt', 'usd', $market['quoteId']),
-                    'type' => 'future',
-                    'spot' => false,
-                    'future' => true,
-                ));
+            if (($this->has['futures']) && (is_array ($this->options['futures']) && array_key_exists ($market['base'], $this->options['futures']))) {
+                $fiats = $this->options['fiats'];
+                for ($j = 0; $j < count ($fiats); $j++) {
+                    $fiat = $fiats[$j];
+                    $lowercaseFiat = strtolower ($fiat);
+                    $result[] = array_merge ($market, array (
+                        'quote' => $fiat,
+                        'symbol' => $market['base'] . '/' . $fiat,
+                        'id' => strtolower ($market['base']) . '_' . $lowercaseFiat,
+                        'quoteId' => $lowercaseFiat,
+                        'type' => 'future',
+                        'spot' => false,
+                        'future' => true,
+                    ));
+                }
             }
         }
         return $result;
@@ -235,7 +261,7 @@ class okcoinusd extends Exchange {
             $request['size'] = $limit;
         if ($market['future']) {
             $method .= 'Future';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
         }
         $method .= 'Depth';
         $orderbook = $this->$method (array_merge ($request, $params));
@@ -243,18 +269,44 @@ class okcoinusd extends Exchange {
     }
 
     public function parse_ticker ($ticker, $market = null) {
-        $timestamp = $ticker['timestamp'];
+        //
+        //     {              buy =>   "48.777300",
+        //                 $change =>   "-1.244500",
+        //       changePercentage =>   "-2.47%",
+        //                  close =>   "49.064000",
+        //            createdDate =>    1531704852254,
+        //             currencyId =>    527,
+        //                dayHigh =>   "51.012500",
+        //                 dayLow =>   "48.124200",
+        //                   high =>   "51.012500",
+        //                inflows =>   "0",
+        //                   $last =>   "49.064000",
+        //                    low =>   "48.124200",
+        //             marketFrom =>    627,
+        //                   name => array (  ),
+        //                   $open =>   "50.308500",
+        //               outflows =>   "0",
+        //              productId =>    527,
+        //                   sell =>   "49.064000",
+        //                 $symbol =>   "zec_okb",
+        //                 volume =>   "1049.092535"   }
+        //
+        $timestamp = $this->safe_integer_2($ticker, 'timestamp', 'createdDate');
         $symbol = null;
-        if (!$market) {
+        if ($market === null) {
             if (is_array ($ticker) && array_key_exists ('symbol', $ticker)) {
                 $marketId = $ticker['symbol'];
                 if (is_array ($this->markets_by_id) && array_key_exists ($marketId, $this->markets_by_id))
                     $market = $this->markets_by_id[$marketId];
             }
         }
-        if ($market)
+        if ($market !== null) {
             $symbol = $market['symbol'];
+        }
         $last = $this->safe_float($ticker, 'last');
+        $open = $this->safe_float($ticker, 'open');
+        $change = $this->safe_float($ticker, 'change');
+        $percentage = $this->safe_float($ticker, 'changePercentage');
         return array (
             'symbol' => $symbol,
             'timestamp' => $timestamp,
@@ -266,14 +318,14 @@ class okcoinusd extends Exchange {
             'ask' => $this->safe_float($ticker, 'sell'),
             'askVolume' => null,
             'vwap' => null,
-            'open' => null,
+            'open' => $open,
             'close' => $last,
             'last' => $last,
             'previousClose' => null,
-            'change' => null,
-            'percentage' => null,
+            'change' => $change,
+            'percentage' => $percentage,
             'average' => null,
-            'baseVolume' => $this->safe_float($ticker, 'vol'),
+            'baseVolume' => $this->safe_float_2($ticker, 'vol', 'volume'),
             'quoteVolume' => null,
             'info' => $ticker,
         );
@@ -288,7 +340,7 @@ class okcoinusd extends Exchange {
         );
         if ($market['future']) {
             $method .= 'Future';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
         }
         $method .= 'Ticker';
         $response = $this->$method (array_merge ($request, $params));
@@ -330,11 +382,26 @@ class okcoinusd extends Exchange {
         );
         if ($market['future']) {
             $method .= 'Future';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
         }
         $method .= 'Trades';
         $response = $this->$method (array_merge ($request, $params));
         return $this->parse_trades($response, $market, $since, $limit);
+    }
+
+    public function parse_ohlcv ($ohlcv, $market = null, $timeframe = '1m', $since = null, $limit = null) {
+        $numElements = is_array ($ohlcv) ? count ($ohlcv) : 0;
+        $volumeIndex = ($numElements > 6) ? 6 : 5;
+        return [
+            $ohlcv[0], // timestamp
+            $ohlcv[1], // Open
+            $ohlcv[2], // High
+            $ohlcv[3], // Low
+            $ohlcv[4], // Close
+            // $ohlcv[5], // quote volume
+            // $ohlcv[6], // base volume
+            $ohlcv[$volumeIndex], // okex will return base volume in the 7th element for future markets
+        ];
     }
 
     public function fetch_ohlcv ($symbol, $timeframe = '1m', $since = null, $limit = null, $params = array ()) {
@@ -347,7 +414,7 @@ class okcoinusd extends Exchange {
         );
         if ($market['future']) {
             $method .= 'Future';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
         }
         $method .= 'Kline';
         if ($limit !== null) {
@@ -368,10 +435,17 @@ class okcoinusd extends Exchange {
         $response = $this->privatePostUserinfo ();
         $balances = $response['info']['funds'];
         $result = array ( 'info' => $response );
-        $ids = is_array ($this->currencies_by_id) ? array_keys ($this->currencies_by_id) : array ();
+        $freeIds = is_array ($balances['free']) ? array_keys ($balances['free']) : array ();
+        $freezedIds = is_array ($balances['freezed']) ? array_keys ($balances['freezed']) : array ();
+        $ids = $this->array_concat($freeIds, $freezedIds);
         for ($i = 0; $i < count ($ids); $i++) {
             $id = $ids[$i];
-            $code = $this->currencies_by_id[$id]['code'];
+            $code = strtoupper ($id);
+            if (is_array ($this->currencies_by_id) && array_key_exists ($id, $this->currencies_by_id)) {
+                $code = $this->currencies_by_id[$id]['code'];
+            } else {
+                $code = $this->common_currency_code($code);
+            }
             $account = $this->account ();
             $account['free'] = $this->safe_float($balances['free'], $id, 0.0);
             $account['used'] = $this->safe_float($balances['freezed'], $id, 0.0);
@@ -392,7 +466,7 @@ class okcoinusd extends Exchange {
         if ($market['future']) {
             $method .= 'Future';
             $order = array_merge ($order, array (
-                'contract_type' => 'this_week', // next_week, quarter
+                'contract_type' => $this->options['defaultContractType'], // this_week, next_week, quarter
                 'match_price' => 0, // match best counter party $price? 0 or 1, ignores $price if 1
                 'lever_rate' => 10, // leverage rate value => 10 or 20 (10 by default)
                 'price' => $price,
@@ -405,9 +479,19 @@ class okcoinusd extends Exchange {
             } else {
                 $order['type'] .= '_market';
                 if ($side === 'buy') {
-                    $order['price'] = $this->safe_float($params, 'cost');
-                    if (!$order['price'])
-                        throw new ExchangeError ($this->id . ' $market buy orders require an additional cost parameter, cost = $price * amount');
+                    if ($this->options['marketBuyPrice']) {
+                        if ($price === null) {
+                            // eslint-disable-next-line quotes
+                            throw new ExchangeError ($this->id . " $market buy orders require a $price argument (the $amount you want to spend or the cost of the $order) when $this->options['marketBuyPrice'] is true.");
+                        }
+                        $order['price'] = $price;
+                    } else {
+                        $order['price'] = $this->safe_float($params, 'cost');
+                        if (!$order['price']) {
+                            // eslint-disable-next-line quotes
+                            throw new ExchangeError ($this->id . " $market buy orders require an additional cost parameter, cost = $price * $amount-> If you want to pass the cost of the $market $order (the $amount you want to spend) in the $price argument (the default " . $this->id . " behaviour), set $this->options['marketBuyPrice'] = true. It will effectively suppress this warning exception as well.");
+                        }
+                    }
                 } else {
                     $order['amount'] = $amount;
                 }
@@ -438,7 +522,7 @@ class okcoinusd extends Exchange {
     }
 
     public function cancel_order ($id, $symbol = null, $params = array ()) {
-        if (!$symbol)
+        if ($symbol === null)
             throw new ExchangeError ($this->id . ' cancelOrder() requires a $symbol argument');
         $this->load_markets();
         $market = $this->market ($symbol);
@@ -449,7 +533,7 @@ class okcoinusd extends Exchange {
         $method = 'privatePost';
         if ($market['future']) {
             $method .= 'FutureCancel';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
         } else {
             $method .= 'CancelOrder';
         }
@@ -506,7 +590,7 @@ class okcoinusd extends Exchange {
         }
         $status = $this->parse_order_status($order['status']);
         $symbol = null;
-        if (!$market) {
+        if ($market === null) {
             if (is_array ($order) && array_key_exists ('symbol', $order))
                 if (is_array ($this->markets_by_id) && array_key_exists ($order['symbol'], $this->markets_by_id))
                     $market = $this->markets_by_id[$order['symbol']];
@@ -517,9 +601,12 @@ class okcoinusd extends Exchange {
         $createDateField = $this->get_create_date_field ();
         if (is_array ($order) && array_key_exists ($createDateField, $order))
             $timestamp = $order[$createDateField];
-        $amount = $order['amount'];
-        $filled = $order['deal_amount'];
+        $amount = $this->safe_float($order, 'amount');
+        $filled = $this->safe_float($order, 'deal_amount');
         $remaining = $amount - $filled;
+        if ($type === 'market') {
+            $remaining = 0;
+        }
         $average = $this->safe_float($order, 'avg_price');
         // https://github.com/ccxt/ccxt/issues/2452
         $average = $this->safe_float($order, 'price_avg', $average);
@@ -558,7 +645,7 @@ class okcoinusd extends Exchange {
     }
 
     public function fetch_order ($id, $symbol = null, $params = array ()) {
-        if (!$symbol)
+        if ($symbol === null)
             throw new ExchangeError ($this->id . ' fetchOrder requires a $symbol parameter');
         $this->load_markets();
         $market = $this->market ($symbol);
@@ -572,7 +659,7 @@ class okcoinusd extends Exchange {
         );
         if ($market['future']) {
             $method .= 'Future';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
         }
         $method .= 'OrderInfo';
         $response = $this->$method (array_merge ($request, $params));
@@ -584,7 +671,7 @@ class okcoinusd extends Exchange {
     }
 
     public function fetch_orders ($symbol = null, $since = null, $limit = null, $params = array ()) {
-        if (!$symbol)
+        if ($symbol === null)
             throw new ExchangeError ($this->id . ' fetchOrders requires a $symbol parameter');
         $this->load_markets();
         $market = $this->market ($symbol);
@@ -595,7 +682,7 @@ class okcoinusd extends Exchange {
         $order_id_in_params = (is_array ($params) && array_key_exists ('order_id', $params));
         if ($market['future']) {
             $method .= 'FutureOrdersInfo';
-            $request['contract_type'] = 'this_week'; // next_week, quarter
+            $request['contract_type'] = $this->options['defaultContractType']; // this_week, next_week, quarter
             if (!$order_id_in_params)
                 throw new ExchangeError ($this->id . ' fetchOrders() requires order_id param for futures $market ' . $symbol . ' (a string of one or more order ids, comma-separated)');
         } else {
@@ -688,7 +775,9 @@ class okcoinusd extends Exchange {
         $url = '/';
         if ($api !== 'web')
             $url .= $this->version . '/';
-        $url .= $path . $this->extension;
+        $url .= $path;
+        if ($api !== 'web')
+            $url .= $this->extension;
         if ($api === 'private') {
             $this->check_required_credentials();
             $query = $this->keysort (array_merge (array (

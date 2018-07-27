@@ -13,8 +13,8 @@ class bitz extends Exchange {
         return array_replace_recursive (parent::describe (), array (
             'id' => 'bitz',
             'name' => 'Bit-Z',
-            'countries' => 'HK',
-            'rateLimit' => 1000,
+            'countries' => array ( 'HK' ),
+            'rateLimit' => 2000,
             'version' => 'v1',
             'userAgent' => $this->userAgents['chrome'],
             'has' => array (
@@ -32,7 +32,7 @@ class bitz extends Exchange {
             ),
             'urls' => array (
                 'logo' => 'https://user-images.githubusercontent.com/1294454/35862606-4f554f14-0b5d-11e8-957d-35058c504b6f.jpg',
-                'api' => 'https://www.bit-z.com/api_v1',
+                'api' => 'https://api.bit-z.com/api_v1',
                 'www' => 'https://www.bit-z.com',
                 'doc' => 'https://www.bit-z.com/api.html',
                 'fees' => 'https://www.bit-z.com/about/fee',
@@ -124,9 +124,12 @@ class bitz extends Exchange {
                 'price' => 8,
             ),
             'options' => array (
+                'fetchOHLCVVolume' => true,
+                'fetchOHLCVWarning' => true,
                 'lastNonceTimestamp' => 0,
             ),
             'commonCurrencies' => array (
+                'XRB' => 'NANO',
                 'PXC' => 'Pixiecoin',
             ),
         ));
@@ -233,7 +236,10 @@ class bitz extends Exchange {
             $id = $ids[$i];
             $market = $this->markets_by_id[$id];
             $symbol = $market['symbol'];
-            $result[$symbol] = $this->parse_ticker($tickers[$id], $market);
+            // they will return some rare $tickers set to boolean false under their $symbol key
+            if ($tickers[$id]) {
+                $result[$symbol] = $this->parse_ticker($tickers[$id], $market);
+            }
         }
         return $result;
     }
@@ -304,7 +310,15 @@ class bitz extends Exchange {
             $side = $this->safe_string($order, 'type');
             if ($side !== null)
                 $side = ($side === 'in') ? 'buy' : 'sell';
+            if ($side === null)
+                $side = $this->safe_string($order, 'flag');
         }
+        $amount = $this->safe_float($order, 'number');
+        $remaining = $this->safe_float($order, 'numberover');
+        $filled = null;
+        if ($amount !== null)
+            if ($remaining !== null)
+                $filled = $amount - $remaining;
         $timestamp = null;
         $iso8601 = null;
         if (is_array ($order) && array_key_exists ('datetime', $order)) {
@@ -323,8 +337,8 @@ class bitz extends Exchange {
             'price' => $order['price'],
             'cost' => null,
             'amount' => $order['number'],
-            'filled' => null,
-            'remaining' => null,
+            'filled' => $filled,
+            'remaining' => $remaining,
             'trades' => null,
             'fee' => null,
             'info' => $order,
@@ -379,7 +393,7 @@ class bitz extends Exchange {
             $this->options['lastNonceTimestamp'] = $currentTimestamp;
             $this->options['lastNonce'] = 100000;
         }
-        $this->options['lastNonce'] .= 1;
+        $this->options['lastNonce'] = $this->sum ($this->options['lastNonce'], 1);
         return $this->options['lastNonce'];
     }
 

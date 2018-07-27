@@ -7,6 +7,7 @@ from ccxt.base.exchange import Exchange
 import json
 from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import AuthenticationError
+from ccxt.base.errors import PermissionDenied
 from ccxt.base.errors import OrderNotFound
 from ccxt.base.errors import DDoSProtection
 
@@ -17,7 +18,7 @@ class bitmex (Exchange):
         return self.deep_extend(super(bitmex, self).describe(), {
             'id': 'bitmex',
             'name': 'BitMEX',
-            'countries': 'SC',  # Seychelles
+            'countries': ['SC'],  # Seychelles
             'version': 'v1',
             'userAgent': None,
             'rateLimit': 2000,
@@ -47,6 +48,7 @@ class bitmex (Exchange):
                     'https://github.com/BitMEX/api-connectors/tree/master/official-http',
                 ],
                 'fees': 'https://www.bitmex.com/app/fees',
+                'referral': 'https://www.bitmex.com/register/rm3C16',
             },
             'api': {
                 'public': {
@@ -133,6 +135,13 @@ class bitmex (Exchange):
                         'order/all',
                     ],
                 },
+            },
+            'exceptions': {
+                'Invalid API Key.': AuthenticationError,
+                'Access Denied': PermissionDenied,
+            },
+            'options': {
+                'fetchTickerQuotes': False,
             },
         })
 
@@ -293,9 +302,14 @@ class bitmex (Exchange):
             'count': 1,
             'reverse': True,
         }, params)
-        quotes = self.publicGetQuoteBucketed(request)
-        quotesLength = len(quotes)
-        quote = quotes[quotesLength - 1]
+        bid = None
+        ask = None
+        if self.options['fetchTickerQuotes']:
+            quotes = self.publicGetQuoteBucketed(request)
+            quotesLength = len(quotes)
+            quote = quotes[quotesLength - 1]
+            bid = self.safe_float(quote, 'bidPrice')
+            ask = self.safe_float(quote, 'askPrice')
         tickers = self.publicGetTradeBucketed(request)
         ticker = tickers[0]
         timestamp = self.milliseconds()
@@ -308,9 +322,9 @@ class bitmex (Exchange):
             'datetime': self.iso8601(timestamp),
             'high': self.safe_float(ticker, 'high'),
             'low': self.safe_float(ticker, 'low'),
-            'bid': self.safe_float(quote, 'bidPrice'),
+            'bid': bid,
             'bidVolume': None,
-            'ask': self.safe_float(quote, 'askPrice'),
+            'ask': ask,
             'askVolume': None,
             'vwap': self.safe_float(ticker, 'vwap'),
             'open': open,
@@ -368,7 +382,7 @@ class bitmex (Exchange):
     def parse_trade(self, trade, market=None):
         timestamp = self.parse8601(trade['timestamp'])
         symbol = None
-        if not market:
+        if market is None:
             if 'symbol' in trade:
                 market = self.markets_by_id[trade['symbol']]
         if market:
@@ -402,7 +416,7 @@ class bitmex (Exchange):
         if status is not None:
             status = self.parse_order_status(status)
         symbol = None
-        if market:
+        if market is not None:
             symbol = market['symbol']
         else:
             id = order['symbol']
@@ -422,7 +436,10 @@ class bitmex (Exchange):
         price = self.safe_float(order, 'price')
         amount = self.safe_float(order, 'orderQty')
         filled = self.safe_float(order, 'cumQty', 0.0)
-        remaining = max(amount - filled, 0.0)
+        remaining = None
+        if amount is not None:
+            if filled is not None:
+                remaining = max(amount - filled, 0.0)
         cost = None
         if price is not None:
             if filled is not None:
@@ -535,12 +552,13 @@ class bitmex (Exchange):
                     response = json.loads(body)
                     if 'error' in response:
                         if 'message' in response['error']:
+                            feedback = self.id + ' ' + self.json(response)
                             message = self.safe_value(response['error'], 'message')
+                            exceptions = self.exceptions
                             if message is not None:
-                                if message == 'Invalid API Key.':
-                                    raise AuthenticationError(self.id + ' ' + self.json(response))
-                            # stub code, need proper handling
-                            raise ExchangeError(self.id + ' ' + self.json(response))
+                                if message in exceptions:
+                                    raise exceptions[message](feedback)
+                            raise ExchangeError(feedback)
 
     def nonce(self):
         return self.milliseconds()

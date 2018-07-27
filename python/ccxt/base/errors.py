@@ -26,6 +26,7 @@ __all__ = [
     'NotSupported',
     'AuthenticationError',
     'PermissionDenied',
+    'AccountSuspended',
     'InsufficientFunds',
     'InvalidOrder',
     'OrderNotFound',
@@ -35,7 +36,12 @@ __all__ = [
     'RequestTimeout',
     'ExchangeNotAvailable',
     'InvalidNonce',
-    'InvalidAddress'
+    'InvalidAddress',
+    'AddressPending',
+    'BadResponse',
+    'NullResponse',
+    'OrderNotFillable',
+    'OrderImmediatelyFillable',
 ]
 
 # -----------------------------------------------------------------------------
@@ -56,6 +62,16 @@ class NotSupported(ExchangeError):
     pass
 
 
+class BadResponse(ExchangeError):
+    """Raised if the endpoint returns a bad response from the exchange API"""
+    pass
+
+
+class NullResponse(BadResponse):
+    """Raised if the endpoint returns a null response from the exchange API"""
+    pass
+
+
 class AuthenticationError(ExchangeError):
     """Raised when API credentials are required but missing or wrong"""
     pass
@@ -63,6 +79,11 @@ class AuthenticationError(ExchangeError):
 
 class PermissionDenied(AuthenticationError):
     """Raised when API credentials are required but missing or wrong"""
+    pass
+
+
+class AccountSuspended(AuthenticationError):
+    """Raised when user account has been suspended or deactivated by the exchange"""
     pass
 
 
@@ -81,6 +102,11 @@ class InvalidAddress(ExchangeError):
     pass
 
 
+class AddressPending(InvalidAddress):
+    """Raised when the address requested is pending (not ready yet, retry again later)"""
+    pass
+
+
 class OrderNotFound(InvalidOrder):
     """Raised when you are trying to fetch or cancel a non-existent order"""
     pass
@@ -93,6 +119,16 @@ class OrderNotCached(InvalidOrder):
 
 class CancelPending(InvalidOrder):
     """Raised when an order that is already pending cancel is being canceled again"""
+    pass
+
+
+class OrderNotFillable(InvalidOrder):
+    """Raised when an order placed as a market order or a taker order is not fillable upon request"""
+    pass
+
+
+class OrderImmediatelyFillable(InvalidOrder):
+    """Raised when an order placed as maker order is fillable immediately as a taker upon request"""
     pass
 
 

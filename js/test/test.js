@@ -112,6 +112,10 @@ let testSymbol = async (exchange, symbol) => {
         log (await exchange.fetchTickers ())
         log (await exchange.fetchGlobal  ())
 
+    } else if (exchange.id === 'coinbase') {
+
+        // do nothing for now
+
     } else {
 
         await tests['fetchOrderBook']   (exchange, symbol)
@@ -180,6 +184,7 @@ let testExchange = async exchange => {
         'ETH/BTC',
         'BTC/JPY',
         'LTC/BTC',
+        'ZRX/WETH',
     ]
     for (let s in symbols) {
         if (exchange.symbols.includes (symbols[s])) {
@@ -255,7 +260,6 @@ let testExchange = async exchange => {
     // } catch (e) {
     //     console.log (exchange.id, 'error', 'limit buy', e)
     // }
-
 }
 
 //-----------------------------------------------------------------------------
@@ -345,5 +349,4 @@ let tryAllProxies = async function (exchange, proxies) {
 
         await tryAllProxies (exchange, proxies)
     }
-
 }) ()

@@ -19,8 +19,8 @@ class bitz (Exchange):
         return self.deep_extend(super(bitz, self).describe(), {
             'id': 'bitz',
             'name': 'Bit-Z',
-            'countries': 'HK',
-            'rateLimit': 1000,
+            'countries': ['HK'],
+            'rateLimit': 2000,
             'version': 'v1',
             'userAgent': self.userAgents['chrome'],
             'has': {
@@ -38,7 +38,7 @@ class bitz (Exchange):
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/35862606-4f554f14-0b5d-11e8-957d-35058c504b6f.jpg',
-                'api': 'https://www.bit-z.com/api_v1',
+                'api': 'https://api.bit-z.com/api_v1',
                 'www': 'https://www.bit-z.com',
                 'doc': 'https://www.bit-z.com/api.html',
                 'fees': 'https://www.bit-z.com/about/fee',
@@ -130,9 +130,12 @@ class bitz (Exchange):
                 'price': 8,
             },
             'options': {
+                'fetchOHLCVVolume': True,
+                'fetchOHLCVWarning': True,
                 'lastNonceTimestamp': 0,
             },
             'commonCurrencies': {
+                'XRB': 'NANO',
                 'PXC': 'Pixiecoin',
             },
         })
@@ -230,7 +233,9 @@ class bitz (Exchange):
             id = ids[i]
             market = self.markets_by_id[id]
             symbol = market['symbol']
-            result[symbol] = self.parse_ticker(tickers[id], market)
+            # they will return some rare tickers set to boolean False under their symbol key
+            if tickers[id]:
+                result[symbol] = self.parse_ticker(tickers[id], market)
         return result
 
     def fetch_order_book(self, symbol, limit=None, params={}):
@@ -295,6 +300,14 @@ class bitz (Exchange):
             side = self.safe_string(order, 'type')
             if side is not None:
                 side = 'buy' if (side == 'in') else 'sell'
+            if side is None:
+                side = self.safe_string(order, 'flag')
+        amount = self.safe_float(order, 'number')
+        remaining = self.safe_float(order, 'numberover')
+        filled = None
+        if amount is not None:
+            if remaining is not None:
+                filled = amount - remaining
         timestamp = None
         iso8601 = None
         if 'datetime' in order:
@@ -312,8 +325,8 @@ class bitz (Exchange):
             'price': order['price'],
             'cost': None,
             'amount': order['number'],
-            'filled': None,
-            'remaining': None,
+            'filled': filled,
+            'remaining': remaining,
             'trades': None,
             'fee': None,
             'info': order,
@@ -363,7 +376,7 @@ class bitz (Exchange):
         if currentTimestamp > self.options['lastNonceTimestamp']:
             self.options['lastNonceTimestamp'] = currentTimestamp
             self.options['lastNonce'] = 100000
-        self.options['lastNonce'] += 1
+        self.options['lastNonce'] = self.sum(self.options['lastNonce'], 1)
         return self.options['lastNonce']
 
     def sign(self, path, api='public', method='GET', params={}, headers=None, body=None):

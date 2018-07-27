@@ -12,8 +12,8 @@ module.exports = class bitz extends Exchange {
         return this.deepExtend (super.describe (), {
             'id': 'bitz',
             'name': 'Bit-Z',
-            'countries': 'HK',
-            'rateLimit': 1000,
+            'countries': [ 'HK' ],
+            'rateLimit': 2000,
             'version': 'v1',
             'userAgent': this.userAgents['chrome'],
             'has': {
@@ -31,7 +31,7 @@ module.exports = class bitz extends Exchange {
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/35862606-4f554f14-0b5d-11e8-957d-35058c504b6f.jpg',
-                'api': 'https://www.bit-z.com/api_v1',
+                'api': 'https://api.bit-z.com/api_v1',
                 'www': 'https://www.bit-z.com',
                 'doc': 'https://www.bit-z.com/api.html',
                 'fees': 'https://www.bit-z.com/about/fee',
@@ -123,9 +123,12 @@ module.exports = class bitz extends Exchange {
                 'price': 8,
             },
             'options': {
+                'fetchOHLCVVolume': true,
+                'fetchOHLCVWarning': true,
                 'lastNonceTimestamp': 0,
             },
             'commonCurrencies': {
+                'XRB': 'NANO',
                 'PXC': 'Pixiecoin',
             },
         });
@@ -232,7 +235,10 @@ module.exports = class bitz extends Exchange {
             let id = ids[i];
             let market = this.markets_by_id[id];
             let symbol = market['symbol'];
-            result[symbol] = this.parseTicker (tickers[id], market);
+            // they will return some rare tickers set to boolean false under their symbol key
+            if (tickers[id]) {
+                result[symbol] = this.parseTicker (tickers[id], market);
+            }
         }
         return result;
     }
@@ -303,7 +309,15 @@ module.exports = class bitz extends Exchange {
             side = this.safeString (order, 'type');
             if (typeof side !== 'undefined')
                 side = (side === 'in') ? 'buy' : 'sell';
+            if (typeof side === 'undefined')
+                side = this.safeString (order, 'flag');
         }
+        let amount = this.safeFloat (order, 'number');
+        let remaining = this.safeFloat (order, 'numberover');
+        let filled = undefined;
+        if (typeof amount !== 'undefined')
+            if (typeof remaining !== 'undefined')
+                filled = amount - remaining;
         let timestamp = undefined;
         let iso8601 = undefined;
         if ('datetime' in order) {
@@ -322,8 +336,8 @@ module.exports = class bitz extends Exchange {
             'price': order['price'],
             'cost': undefined,
             'amount': order['number'],
-            'filled': undefined,
-            'remaining': undefined,
+            'filled': filled,
+            'remaining': remaining,
             'trades': undefined,
             'fee': undefined,
             'info': order,
@@ -378,7 +392,7 @@ module.exports = class bitz extends Exchange {
             this.options['lastNonceTimestamp'] = currentTimestamp;
             this.options['lastNonce'] = 100000;
         }
-        this.options['lastNonce'] += 1;
+        this.options['lastNonce'] = this.sum (this.options['lastNonce'], 1);
         return this.options['lastNonce'];
     }
 

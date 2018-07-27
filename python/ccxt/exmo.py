@@ -34,6 +34,7 @@ class exmo (Exchange):
             'has': {
                 'CORS': False,
                 'fetchClosedOrders': 'emulated',
+                'fetchDepositAddress': True,
                 'fetchOpenOrders': True,
                 'fetchOrder': 'emulated',
                 'fetchOrders': 'emulated',
@@ -46,7 +47,8 @@ class exmo (Exchange):
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/27766491-1b0ea956-5eda-11e7-9225-40d67b481b8d.jpg',
                 'api': 'https://api.exmo.com',
-                'www': 'https://exmo.me/?ref=131685',
+                'www': 'https://exmo.me',
+                'referral': 'https://exmo.me/?ref=131685',
                 'doc': [
                     'https://exmo.me/en/api_doc?ref=131685',
                     'https://github.com/exmo-dev/exmo_api_lib/tree/master/nodejs',
@@ -192,7 +194,7 @@ class exmo (Exchange):
     def fetch_order_books(self, symbols=None, params={}):
         self.load_markets()
         ids = None
-        if not symbols:
+        if symbols is None:
             ids = ','.join(self.ids)
             # max URL length is 2083 symbols, including http schema, hostname, tld, etc...
             if len(ids) > 2048:
@@ -511,6 +513,26 @@ class exmo (Exchange):
             'trades': trades,
             'fee': fee,
             'info': order,
+        }
+
+    def fetch_deposit_address(self, code, params={}):
+        self.load_markets()
+        response = self.privatePostDepositAddress(params)
+        depositAddress = self.safe_string(response, code)
+        address = None
+        tag = None
+        if depositAddress:
+            addressAndTag = depositAddress.split(',')
+            address = addressAndTag[0]
+            numParts = len(addressAndTag)
+            if numParts > 1:
+                tag = addressAndTag[1]
+        self.check_address(address)
+        return {
+            'currency': code,
+            'address': address,
+            'tag': tag,
+            'info': response,
         }
 
     def get_market_from_trades(self, trades):

@@ -7,8 +7,8 @@ from ccxt.bitfinex import bitfinex
 import hashlib
 import math
 from ccxt.base.errors import ExchangeError
-from ccxt.base.errors import NotSupported
 from ccxt.base.errors import InsufficientFunds
+from ccxt.base.errors import NotSupported
 
 
 class bitfinex2 (bitfinex):
@@ -17,8 +17,9 @@ class bitfinex2 (bitfinex):
         return self.deep_extend(super(bitfinex2, self).describe(), {
             'id': 'bitfinex2',
             'name': 'Bitfinex v2',
-            'countries': 'VG',
+            'countries': ['VG'],
             'version': 'v2',
+            'certified': False,
             # new metainfo interface
             'has': {
                 'CORS': True,
@@ -82,11 +83,11 @@ class bitfinex2 (bitfinex):
                         'book/{symbol}/P2',
                         'book/{symbol}/P3',
                         'book/{symbol}/R0',
-                        'stats1/{key}:{size}:{symbol}/{side}/{section}',
-                        'stats1/{key}:{size}:{symbol}/long/last',
-                        'stats1/{key}:{size}:{symbol}/long/hist',
-                        'stats1/{key}:{size}:{symbol}/short/last',
-                        'stats1/{key}:{size}:{symbol}/short/hist',
+                        'stats1/{key}:{size}:{symbol}:{side}/{section}',
+                        'stats1/{key}:{size}:{symbol}:long/last',
+                        'stats1/{key}:{size}:{symbol}:long/hist',
+                        'stats1/{key}:{size}:{symbol}:short/last',
+                        'stats1/{key}:{size}:{symbol}:short/hist',
                         'candles/trade:{timeframe}:{symbol}/{section}',
                         'candles/trade:{timeframe}:{symbol}/last',
                         'candles/trade:{timeframe}:{symbol}/hist',
@@ -170,9 +171,7 @@ class bitfinex2 (bitfinex):
         return(code in list(fiat.keys()))
 
     def get_currency_id(self, code):
-        isFiat = self.is_fiat(code)
-        prefix = 'f' if isFiat else 't'
-        return prefix + code
+        return 'f' + code
 
     def fetch_markets(self):
         markets = self.v1GetSymbolsDetails()
@@ -233,16 +232,27 @@ class bitfinex2 (bitfinex):
             total = balance[2]
             available = balance[4]
             if accountType == balanceType:
-                if currency[0] == 't':
+                code = currency
+                if currency in self.currencies_by_id:
+                    code = self.currencies_by_id[currency]['code']
+                elif currency[0] == 't':
                     currency = currency[1:]
-                uppercase = currency.upper()
-                uppercase = self.common_currency_code(uppercase)
+                    code = currency.upper()
+                    code = self.common_currency_code(code)
+                else:
+                    code = self.common_currency_code(code)
                 account = self.account()
-                account['free'] = available
                 account['total'] = total
-                if account['free']:
+                if not available:
+                    if available == 0:
+                        account['free'] = 0
+                        account['used'] = total
+                    else:
+                        account['free'] = total
+                else:
+                    account['free'] = available
                     account['used'] = account['total'] - account['free']
-                result[uppercase] = account
+                result[code] = account
         return self.parse_balance(result)
 
     def fetch_order_book(self, symbol, limit=None, params={}):
@@ -293,7 +303,7 @@ class bitfinex2 (bitfinex):
             'last': last,
             'previousClose': None,
             'change': ticker[length - 6],
-            'percentage': ticker[length - 5],
+            'percentage': ticker[length - 5] * 100,
             'average': None,
             'baseVolume': ticker[length - 3],
             'quoteVolume': None,
