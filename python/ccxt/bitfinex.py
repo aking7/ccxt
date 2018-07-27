@@ -277,7 +277,7 @@ class bitfinex (Exchange):
                 'SPK': 'SPANK',
                 'STJ': 'STORJ',
                 'YYW': 'YOYOW',
-                'USD': 'USDT',
+                'USD': 'USD',   # DangerCrypt compatibility fix
             },
             'exceptions': {
                 'exact': {
