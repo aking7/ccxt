@@ -4,6 +4,7 @@
 
 let [processPath, , exchangeId, methodName, ... params] = process.argv.filter (x => !x.startsWith ('--'))
     , verbose = process.argv.includes ('--verbose')
+    , debug = process.argv.includes ('--verbose')
     , cloudscrape = process.argv.includes ('--cloudscrape')
     , cfscrape = process.argv.includes ('--cfscrape')
     , poll = process.argv.includes ('--poll')
@@ -11,29 +12,39 @@ let [processPath, , exchangeId, methodName, ... params] = process.argv.filter (x
     , no_load_markets = process.argv.includes ('--no-load-markets')
     , details = process.argv.includes ('--details')
     , no_table = process.argv.includes ('--no-table')
+    , table = process.argv.includes ('--table')
     , iso8601 = process.argv.includes ('--iso8601')
-    , no_info = process.argv.includes ('--no-info')
+    , cors = process.argv.includes ('--cors')
 
 //-----------------------------------------------------------------------------
 
 const ccxt         = require ('../../ccxt.js')
     , fs           = require ('fs')
     , path         = require ('path')
-    , asTable      = require ('as-table')
+    , ansi         = require ('ansicolor').nice
+    , asTable      = require ('as-table').configure ({
+
+        delimiter: ' | '.lightGray.dim,
+        right: true,
+        title: x => String (x).lightGray,
+        dash: '-'.lightGray.dim,
+        print: x => {
+            if (typeof x === 'object') {
+                const j = JSON.stringify (x).trim ()
+                if (j.length < 100) return j
+            }
+            return String (x)
+        }
+    })
     , util         = require ('util')
     , { execSync } = require ('child_process')
     , log          = require ('ololog').configure ({ locate: false }).unlimited
     , { ExchangeError, NetworkError } = ccxt
 
-
 //-----------------------------------------------------------------------------
 
-require ('ansicolor').nice
-
-//-----------------------------------------------------------------------------
-
-process.on ('uncaughtException',  e => { log.bright.red.error (e); process.exit (1) })
-process.on ('unhandledRejection', e => { log.bright.red.error (e); process.exit (1) })
+process.on ('uncaughtException',  e => { log.bright.red.error (e); log.red.error (e.message); process.exit (1) })
+process.on ('unhandledRejection', e => { log.bright.red.error (e); log.red.error (e.message); process.exit (1) })
 
 //-----------------------------------------------------------------------------
 // cloudscraper helper
@@ -76,23 +87,6 @@ const cfscrapeCookies = (url) => {
 
 //-----------------------------------------------------------------------------
 
-const timeout = 30000
-let exchange = undefined
-const enableRateLimit = true
-
-try {
-
-    exchange = new (ccxt)[exchangeId] ({ verbose, timeout, enableRateLimit })
-
-} catch (e) {
-
-    log.red (e)
-    printUsage ()
-    process.exit ()
-}
-
-//-----------------------------------------------------------------------------
-
 // set up keys and settings, if any
 const keysGlobal = path.resolve ('keys.json')
 const keysLocal = path.resolve ('keys.local.json')
@@ -101,7 +95,33 @@ let globalKeysFile = fs.existsSync (keysGlobal) ? keysGlobal : false
 let localKeysFile = fs.existsSync (keysLocal) ? keysLocal : globalKeysFile
 let settings = localKeysFile ? (require (localKeysFile)[exchangeId] || {}) : {}
 
-Object.assign (exchange, settings)
+//-----------------------------------------------------------------------------
+
+const timeout = 30000
+let exchange = undefined
+const enableRateLimit = true
+
+try {
+
+    const { Agent } = require ('https')
+
+    const agent = new Agent ({
+        ecdhCurve: 'auto',
+    })
+
+    exchange = new (ccxt)[exchangeId] ({
+        timeout,
+        enableRateLimit,
+        agent,
+        ... settings,
+    })
+
+} catch (e) {
+
+    log.red (e)
+    printUsage ()
+    process.exit ()
+}
 
 //-----------------------------------------------------------------------------
 
@@ -121,22 +141,26 @@ function printSupportedExchanges () {
     printSupportedExchanges ()
     log ('Supported options:')
     log ('--verbose         Print verbose output')
+    log ('--debug           Print debugging output')
     log ('--cloudscrape     Use https://github.com/codemanki/cloudscraper to bypass Cloudflare')
     log ('--cfscrape        Use https://github.com/Anorov/cloudflare-scrape to bypass Cloudflare (requires python and cfscrape)')
     log ('--poll            Repeat continuously in rate-limited mode')
     log ("--no-send         Print the request but don't actually send it to the exchange (sets verbose and load-markets)")
     log ('--no-load-markets Do not pre-load markets (for debugging)')
     log ('--details         Print detailed fetch responses')
-    log ('--no-table        Do not print tabulated fetch responses')
+    log ('--no-table        Do not print the fetch response as a table')
+    log ('--table           Print the fetch response as a table')
     log ('--iso8601         Print timestamps as ISO8601 datetimes')
+    log ('--cors            use CORS proxy for debugging')
 }
 
 //-----------------------------------------------------------------------------
 
 const printHumanReadable = (exchange, result) => {
 
-    if (Array.isArray (result)) {
+    if (Array.isArray (result) || table) {
 
+        result = Object.values (result)
         let arrayOfObjects = (typeof result[0] === 'object')
 
         if (details)
@@ -147,12 +171,10 @@ const printHumanReadable = (exchange, result) => {
             })
 
         if (!no_table)
-            if (arrayOfObjects) {
+            if (arrayOfObjects || table) {
                 log (result.length > 0 ? asTable (result.map (element => {
                     let keys = Object.keys (element)
-                    if (no_info) {
-                        delete element['info']
-                    }
+                    delete element['info']
                     keys.forEach (key => {
                         if (typeof element[key] === 'number') {
                             if (!iso8601)
@@ -194,19 +216,9 @@ async function main () {
 
     } else {
 
-        let args = params.map (param => {
-            if (param === 'undefined')
-                return undefined
-            if (param[0] === '{' || param[0] === '[')
-                return JSON.parse (param)
-            if (param.match (/[0-9]{4}[-]?[0-9]{2}[-]?[0-9]{2}[T\s]?[0-9]{2}[:]?[0-9]{2}[:]?[0-9]{2}/g))
-                return exchange.parse8601 (param)
-            if (param.match (/[a-zA-Z-]/g))
-                return param
-            if (param.match (/^[+0-9\.-]+$/))
-                return parseFloat (param)
-            return param
-        })
+        let args = params
+            .map (s => s.match (/^[0-9]{4}[-]?[0-9]{2}[-]?[0-9]{2}[T\s]?[0-9]{2}[:]?[0-9]{2}[:]?[0-9]{2}/g) ? exchange.parse8601 (s) : s)
+            .map (s => (() => { try { return eval ('(() => (' + s + ')) ()') } catch (e) { return s } }) ())
 
         const www = Array.isArray (exchange.urls.www) ? exchange.urls.www[0] : exchange.urls.www
 
@@ -216,11 +228,22 @@ async function main () {
         if (cfscrape)
             exchange.headers = cfscrapeCookies (www)
 
+        if (cors) {
+            exchange.proxy =  'https://cors-anywhere.herokuapp.com/';
+            exchange.origin = exchange.uuid ()
+        }
+
         no_load_markets = no_send ? true : no_load_markets
+
+        if (debug) {
+            exchange.verbose = verbose
+        }
 
         if (!no_load_markets) {
             await exchange.loadMarkets ()
         }
+
+        exchange.verbose = verbose
 
         if (no_send) {
 
@@ -272,7 +295,7 @@ async function main () {
                     break;
             }
 
-        } else if (typeof exchange[methodName] === 'undefined') {
+        } else if (exchange[methodName] === undefined) {
 
             log.red (exchange.id + '.' + methodName + ': no such property')
 

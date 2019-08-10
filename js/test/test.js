@@ -14,7 +14,7 @@ const asTable   = require ('as-table')
     , ansi      = require ('ansicolor').nice
     , fs        = require ('fs')
     , ccxt      = require ('../../ccxt.js')
-    , countries = require ('../../countries.js')
+    , countries = require ('../../build/countries.js')
     , chai      = require ('chai')
     , expect    = chai.expect
     , assert    = chai.assert
@@ -44,7 +44,14 @@ let proxies = [
 
 const enableRateLimit = true
 
+const { Agent } = require ('https')
+
+const agent = new Agent ({
+    ecdhCurve: 'auto',
+})
+
 const exchange = new (ccxt)[exchangeId] ({
+    agent,
     verbose,
     enableRateLimit,
     debug,
@@ -80,6 +87,16 @@ let keysFile = fs.existsSync (keysLocal) ? keysLocal : keysGlobal
 // eslint-disable-next-line import/no-dynamic-require
 let settings = require ('../../' + keysFile)[exchangeId]
 
+if (settings) {
+    const keys = Object.keys (settings)
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i]
+        if (settings[key]) {
+            settings[key] = ccxt.deepExtend (exchange[key] || {}, settings[key])
+        }
+    }
+}
+
 Object.assign (exchange, settings)
 
 if (settings && settings.skip) {
@@ -90,7 +107,7 @@ if (settings && settings.skip) {
 //-----------------------------------------------------------------------------
 
 let countryName = function (code) {
-    return ((typeof countries[code] !== 'undefined') ? countries[code] : code)
+    return ((countries[code] !== undefined) ? countries[code] : code)
 }
 
 //-----------------------------------------------------------------------------
@@ -139,6 +156,7 @@ let loadExchange = async exchange => {
     let symbols = [
         'BTC/CNY',
         'BTC/USD',
+        'BTC/USDT',
         'BTC/EUR',
         'BTC/ETH',
         'ETH/BTC',
@@ -172,12 +190,52 @@ let loadExchange = async exchange => {
 
 let testExchange = async exchange => {
 
+    const codes = [
+        'BTC',
+        'ETH',
+        'XRP',
+        'LTC',
+        'BCH',
+        'EOS',
+        'BNB',
+        'BSV',
+        'USDT',
+        'ATOM',
+        'BAT',
+        'BTG',
+        'DASH',
+        'DOGE',
+        'ETC',
+        'IOTA',
+        'LSK',
+        'MKR',
+        'NEO',
+        'PAX',
+        'QTUM',
+        'TRX',
+        'TUSD',
+        'USD',
+        'USDC',
+        'WAVES',
+        'XEM',
+        'XMR',
+        'ZEC',
+        'ZRX',
+    ]
+    let code = codes[0]
+    for (let c in codes) {
+        if (c in exchange.currencies) {
+            code = c
+        }
+    }
+
     await loadExchange (exchange)
 
     let delay = exchange.rateLimit
     let symbol = exchange.symbols[0]
-    let symbols = [
+    const symbols = [
         'BTC/USD',
+        'BTC/USDT',
         'BTC/CNY',
         'BTC/EUR',
         'BTC/ETH',
@@ -205,24 +263,34 @@ let testExchange = async exchange => {
         await testSymbol (exchange, symbol)
     }
 
-    if (!exchange.apiKey || (exchange.apiKey.length < 1))
+    if (!exchange.privateKey && (!exchange.apiKey || (exchange.apiKey.length < 1)))
         return true
 
     exchange.checkRequiredCredentials ()
 
-    // move to testnet/sandbox if possible before accessing the balance if possible
-    if (exchange.urls['test'])
-        exchange.urls['api'] = exchange.urls['test']
+    // move to testnet/sandbox if possible before accessing the balance
+    // if (exchange.urls['test'])
+    //    exchange.urls['api'] = exchange.urls['test']
 
     let balance = await tests['fetchBalance'] (exchange)
 
     await tests['fetchFundingFees']  (exchange)
     await tests['fetchTradingFees']  (exchange)
+    await tests['fetchStatus'] (exchange)
 
     await tests['fetchOrders']       (exchange, symbol)
     await tests['fetchOpenOrders']   (exchange, symbol)
     await tests['fetchClosedOrders'] (exchange, symbol)
     await tests['fetchMyTrades']     (exchange, symbol)
+
+    if ('fetchLedger' in tests) {
+        await tests['fetchLedger'] (exchange, code)
+    }
+
+    // const code = exchange.markets[symbol]['quote']
+    // await tests['fetchTransactions'] (exchange, code)
+    // await tests['fetchDeposits']     (exchange, code)
+    // await tests['fetchWithdrawals']  (exchange, code)
 
     if (exchange.extendedTest) {
 

@@ -23,6 +23,7 @@ class coolcoin extends coinegg {
                 'www' => 'https://www.coolcoin.com',
                 'doc' => 'https://www.coolcoin.com/help.api.html',
                 'fees' => 'https://www.coolcoin.com/spend.price.html',
+                'referral' => 'https://www.coolcoin.com/user/register?invite_code=bhaega',
             ),
             'fees' => array (
                 'trading' => array (
@@ -62,6 +63,9 @@ class coolcoin extends coinegg {
                         'BT2' => '1%',
                     ),
                 ),
+            ),
+            'options' => array (
+                'quoteIds' => ['btc', 'usdt'],
             ),
         ));
     }

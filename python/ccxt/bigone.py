@@ -4,18 +4,12 @@
 # https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 from ccxt.base.exchange import Exchange
-
-# -----------------------------------------------------------------------------
-
-try:
-    basestring  # Python 3
-except NameError:
-    basestring = str  # Python 2
 import math
-import json
 from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import AuthenticationError
+from ccxt.base.errors import ArgumentsRequired
 from ccxt.base.errors import ExchangeNotAvailable
+from ccxt.base.errors import InvalidNonce
 
 
 class bigone (Exchange):
@@ -24,15 +18,17 @@ class bigone (Exchange):
         return self.deep_extend(super(bigone, self).describe(), {
             'id': 'bigone',
             'name': 'BigONE',
-            'countries': 'GB',
+            'countries': ['GB'],
             'version': 'v2',
             'has': {
-                'fetchTickers': True,
-                'fetchOpenOrders': True,
-                'fetchMyTrades': True,
+                'cancelAllOrders': True,
+                'createMarketOrder': False,
                 'fetchDepositAddress': True,
-                'withdraw': True,
+                'fetchMyTrades': False,
                 'fetchOHLCV': False,
+                'fetchOpenOrders': True,
+                'fetchTickers': True,
+                'withdraw': True,
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/42803606-27c2b5ec-89af-11e8-8d15-9c8c245e8b2c.jpg',
@@ -64,6 +60,9 @@ class bigone (Exchange):
                         'accounts',
                         'orders',
                         'orders/{order_id}',
+                        'trades',
+                        'withdrawals',
+                        'deposits',
                     ],
                     'post': [
                         'orders',
@@ -99,6 +98,7 @@ class bigone (Exchange):
             'exceptions': {
                 'codes': {
                     '401': AuthenticationError,
+                    '10030': InvalidNonce,  # {"message":"invalid nonce, nonce should be a 19bits number","code":10030}
                 },
                 'detail': {
                     'Internal server error': ExchangeNotAvailable,
@@ -106,9 +106,9 @@ class bigone (Exchange):
             },
         })
 
-    def fetch_markets(self):
-        response = self.publicGetMarkets()
-        markets = response['data']
+    def fetch_markets(self, params={}):
+        response = self.publicGetMarkets(params)
+        markets = self.safe_value(response, 'data')
         result = []
         self.options['marketsByUuid'] = {}
         for i in range(0, len(markets)):
@@ -125,16 +125,18 @@ class bigone (Exchange):
             #                        name: "Bitcoin"                               }  }}
             #
             market = markets[i]
-            id = market['name']
-            uuid = market['uuid']
-            baseId = market['baseAsset']['symbol']
-            quoteId = market['quoteAsset']['symbol']
-            base = self.common_currency_code(baseId)
-            quote = self.common_currency_code(quoteId)
+            id = self.safe_string(market, 'name')
+            uuid = self.safe_string(market, 'uuid')
+            baseAsset = self.safe_value(market, 'baseAsset', {})
+            quoteAsset = self.safe_value(market, 'quoteAsset', {})
+            baseId = self.safe_string(baseAsset, 'symbol')
+            quoteId = self.safe_string(quoteAsset, 'symbol')
+            base = self.safe_currency_code(baseId)
+            quote = self.safe_currency_code(quoteId)
             symbol = base + '/' + quote
             precision = {
-                'amount': market['baseScale'],
-                'price': market['quoteScale'],
+                'amount': self.safe_integer(market, 'baseScale'),
+                'price': self.safe_integer(market, 'quoteScale'),
             }
             entry = {
                 'id': id,
@@ -198,16 +200,18 @@ class bigone (Exchange):
             symbol = market['symbol']
         timestamp = self.milliseconds()
         close = self.safe_float(ticker, 'close')
+        bid = self.safe_value(ticker, 'bid', {})
+        ask = self.safe_value(ticker, 'ask', {})
         return {
             'symbol': symbol,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
             'high': self.safe_float(ticker, 'high'),
             'low': self.safe_float(ticker, 'low'),
-            'bid': self.safe_float(ticker['bid'], 'price'),
-            'bidVolume': self.safe_float(ticker['bid'], 'amount'),
-            'ask': self.safe_float(ticker['ask'], 'price'),
-            'askVolume': self.safe_float(ticker['ask'], 'amount'),
+            'bid': self.safe_float(bid, 'price'),
+            'bidVolume': self.safe_float(bid, 'amount'),
+            'ask': self.safe_float(ask, 'price'),
+            'askVolume': self.safe_float(ask, 'amount'),
             'vwap': None,
             'open': self.safe_float(ticker, 'open'),
             'close': close,
@@ -224,15 +228,16 @@ class bigone (Exchange):
     def fetch_ticker(self, symbol, params={}):
         self.load_markets()
         market = self.market(symbol)
-        response = self.publicGetMarketsSymbolTicker(self.extend({
+        request = {
             'symbol': market['id'],
-        }, params))
+        }
+        response = self.publicGetMarketsSymbolTicker(self.extend(request, params))
         return self.parse_ticker(response['data'], market)
 
     def fetch_tickers(self, symbols=None, params={}):
         self.load_markets()
         response = self.publicGetTickers(params)
-        tickers = response['data']
+        tickers = self.safe_value(response, 'data')
         result = {}
         for i in range(0, len(tickers)):
             ticker = self.parse_ticker(tickers[i])
@@ -240,11 +245,12 @@ class bigone (Exchange):
             result[symbol] = ticker
         return result
 
-    def fetch_order_book(self, symbol, params={}):
+    def fetch_order_book(self, symbol, limit=None, params={}):
         self.load_markets()
-        response = self.publicGetMarketsSymbolDepth(self.extend({
+        request = {
             'symbol': self.market_id(symbol),
-        }, params))
+        }
+        response = self.publicGetMarketsSymbolDepth(self.extend(request, params))
         return self.parse_order_book(response['data'], None, 'bids', 'asks', 'price', 'amount')
 
     def parse_trade(self, trade, market=None):
@@ -258,8 +264,8 @@ class bigone (Exchange):
         #                      amount: "0.8800000000000000"                    },
         #       cursor:   "Y3Vyc29yOnYxOjE5OTEzMzA2"                              }
         #
-        node = trade['node']
-        timestamp = self.parse8601(node['inserted_at'])
+        node = self.safe_value(trade, 'node', {})
+        timestamp = self.parse8601(self.safe_string(node, 'inserted_at'))
         price = self.safe_float(node, 'price')
         amount = self.safe_float(node, 'amount')
         if market is None:
@@ -269,16 +275,27 @@ class bigone (Exchange):
         symbol = None
         if market is not None:
             symbol = market['symbol']
-        cost = self.cost_to_precision(symbol, price * amount)
-        side = node['taker_side'] == 'sell' if 'ASK' else 'buy'
+        cost = None
+        if amount is not None:
+            if price is not None:
+                cost = self.cost_to_precision(symbol, price * amount)
+        # taker side is not related to buy/sell side
+        # the following code is probably a mistake
+        side = None
+        if node['taker_side'] == 'ASK':
+            side = 'sell'
+        else:
+            side = 'buy'
+        id = self.safe_string(node, 'id')
         return {
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
             'symbol': symbol,
-            'id': self.safe_string(node, 'id'),
+            'id': id,
             'order': None,
             'type': 'limit',
             'side': side,
+            'takerOrMaker': None,
             'price': price,
             'amount': amount,
             'cost': float(cost),
@@ -345,23 +362,14 @@ class bigone (Exchange):
         #                       asset_id: "READ"                                  },
         #
         result = {'info': response}
-        balances = response['data']
+        balances = self.safe_value(response, 'data')
         for i in range(0, len(balances)):
             balance = balances[i]
-            currencyId = balance['asset_id']
-            code = self.common_currency_code(currencyId)
-            if currencyId in self.currencies_by_id:
-                code = self.currencies_by_id[currencyId]['code']
-            total = self.safe_float(balance, 'balance')
-            used = self.safe_float(balance, 'locked_balance')
-            free = None
-            if total is not None and used is not None:
-                free = total - used
-            account = {
-                'free': free,
-                'used': used,
-                'total': total,
-            }
+            currencyId = self.safe_string(balance, 'asset_id')
+            code = self.safe_currency_code(currencyId)
+            account = self.account()
+            account['total'] = self.safe_float(balance, 'balance')
+            account['used'] = self.safe_float(balance, 'locked_balance')
             result[code] = account
         return self.parse_balance(result)
 
@@ -380,7 +388,7 @@ class bigone (Exchange):
         #       "state": "FILLED"
         #     }
         #
-        id = self.safe_string(order, 'order_id')
+        id = self.safe_string(order, 'id')
         if market is None:
             marketId = self.safe_string(order, 'market_id')
             if marketId in self.markets_by_id:
@@ -392,7 +400,7 @@ class bigone (Exchange):
         symbol = None
         if market is not None:
             symbol = market['symbol']
-        timestamp = self.parse8601(order['created_at'])
+        timestamp = self.parse8601(self.safe_string(order, 'inserted_at'))
         price = self.safe_float(order, 'price')
         amount = self.safe_float(order, 'amount')
         filled = self.safe_float(order, 'filled_amount')
@@ -403,6 +411,10 @@ class bigone (Exchange):
             side = 'buy'
         else:
             side = 'sell'
+        cost = None
+        if filled is not None:
+            if price is not None:
+                cost = filled * price
         return {
             'id': id,
             'datetime': self.iso8601(timestamp),
@@ -412,7 +424,7 @@ class bigone (Exchange):
             'type': None,
             'side': side,
             'price': price,
-            'cost': None,
+            'cost': cost,
             'amount': amount,
             'filled': filled,
             'remaining': remaining,
@@ -422,32 +434,33 @@ class bigone (Exchange):
         }
 
     def create_order(self, symbol, type, side, amount, price=None, params={}):
-        # NAME      DESCRIPTION       EXAMPLE                              REQUIRE
-        # market_id market uuid       d2185614-50c3-4588-b146-b8afe7534da6 True
-        # side      order side one of "ASK"/"BID"                          True
-        # price     order price       string                               True
-        # amount    order amount      string, must larger than 0           True
-        #
-        #     {
-        #       "id": 10,
-        #       "market_uuid": "BTC-EOS",
-        #       "price": "10.00",
-        #       "amount": "10.00",
-        #       "filled_amount": "9.0",
-        #       "avg_deal_price": "12.0",
-        #       "side": "ASK",
-        #       "state": "FILLED"
-        #     }
-        #
         self.load_markets()
         market = self.market(symbol)
-        response = self.privatePostOrders(self.extend({
-            'order_market': market['id'],
-            'order_side': (side == 'BID' if 'buy' else 'ASK'),
-            'amount': self.amount_to_precision(symbol, amount),
-            'price': self.price_to_precision(symbol, price),
-        }, params))
-        return self.parse_order(response, market)
+        side = 'BID' if (side == 'buy') else 'ASK'
+        request = {
+            'market_id': market['id'],  # market uuid d2185614-50c3-4588-b146-b8afe7534da6, required
+            'side': side,  # order side one of "ASK"/"BID", required
+            'amount': self.amount_to_precision(symbol, amount),  # order amount, string, required
+            'price': self.price_to_precision(symbol, price),  # order price, string, required
+        }
+        response = self.privatePostOrders(self.extend(request, params))
+        #
+        #     {
+        #       "data":
+        #         {
+        #           "id": 10,
+        #           "market_uuid": "BTC-EOS",
+        #           "price": "10.00",
+        #           "amount": "10.00",
+        #           "filled_amount": "9.0",
+        #           "avg_deal_price": "12.0",
+        #           "side": "ASK",
+        #           "state": "FILLED"
+        #         }
+        #     }
+        #
+        order = self.safe_value(response, 'data')
+        return self.parse_order(order, market)
 
     def cancel_order(self, id, symbol=None, params={}):
         self.load_markets()
@@ -455,17 +468,21 @@ class bigone (Exchange):
         response = self.privatePostOrdersOrderIdCancel(self.extend(request, params))
         #
         #     {
-        #       "id": 10,
-        #       "market_uuid": "BTC-EOS",
-        #       "price": "10.00",
-        #       "amount": "10.00",
-        #       "filled_amount": "9.0",
-        #       "avg_deal_price": "12.0",
-        #       "side": "ASK",
-        #       "state": "FILLED"
+        #       "data":
+        #         {
+        #           "id": 10,
+        #           "market_uuid": "BTC-EOS",
+        #           "price": "10.00",
+        #           "amount": "10.00",
+        #           "filled_amount": "9.0",
+        #           "avg_deal_price": "12.0",
+        #           "side": "ASK",
+        #           "state": "FILLED"
+        #         }
         #     }
         #
-        return self.parse_order(response)
+        order = self.safe_value(response, 'data')
+        return self.parse_order(order)
 
     def cancel_all_orders(self, symbol=None, params={}):
         self.load_markets()
@@ -495,32 +512,36 @@ class bigone (Exchange):
         response = self.privateGetOrdersOrderId(self.extend(request, params))
         #
         #     {
-        #         "id": 10,
-        #         "market_uuid": "d2185614-50c3-4588-b146-b8afe7534da6",
-        #         "price": "10.00",
-        #         "amount": "10.00",
-        #         "filled_amount": "9.0",
-        #         "avg_deal_price": "12.0",
-        #         "side": "ASK",
-        #         "state": "FILLED"
+        #       "data":
+        #         {
+        #           "id": 10,
+        #           "market_uuid": "BTC-EOS",
+        #           "price": "10.00",
+        #           "amount": "10.00",
+        #           "filled_amount": "9.0",
+        #           "avg_deal_price": "12.0",
+        #           "side": "ASK",
+        #           "state": "FILLED"
+        #         }
         #     }
         #
-        return self.parse_order(response)
+        order = self.safe_value(response, 'data')
+        return self.parse_order(order)
 
     def fetch_orders(self, symbol=None, since=None, limit=None, params={}):
-        # NAME      DESCRIPTION                                           EXAMPLE         REQUIRED
-        # market_id market id                                             ETH-BTC         True
-        # after     ask for the server to return orders after the cursor  dGVzdGN1cmVzZQo False
-        # before    ask for the server to return orders before the cursor dGVzdGN1cmVzZQo False
-        # first     slicing count                                         20              False
-        # last      slicing count                                         20              False
-        # side      order side one of                                     "ASK"/"BID"     False
-        # state     order state one of                      "CANCELED"/"FILLED"/"PENDING" False
         if symbol is None:
-            raise ExchangeError(self.id + ' fetchOrders requires a symbol argument')
+            raise ArgumentsRequired(self.id + ' fetchOrders requires a symbol argument')
         self.load_markets()
         market = self.market(symbol)
         request = {
+            # NAME      DESCRIPTION                                           EXAMPLE         REQUIRED
+            # market_id market id                                             ETH-BTC         True
+            # after     ask for the server to return orders after the cursor  dGVzdGN1cmVzZQo False
+            # before    ask for the server to return orders before the cursor dGVzdGN1cmVzZQo False
+            # first     slicing count                                         20              False
+            # last      slicing count                                         20              False
+            # side      order side one of                                     "ASK"/"BID"     False
+            # state     order state one of                      "CANCELED"/"FILLED"/"PENDING" False
             'market_id': market['id'],
         }
         if limit is not None:
@@ -528,44 +549,60 @@ class bigone (Exchange):
         response = self.privateGetOrders(self.extend(request, params))
         #
         #     {
-        #       "edges": [
-        #         {
-        #           "node": {
-        #             "id": 10,
-        #             "market_id": "ETH-BTC",
-        #             "price": "10.00",
-        #             "amount": "10.00",
-        #             "filled_amount": "9.0",
-        #             "avg_deal_price": "12.0",
-        #             "side": "ASK",
-        #             "state": "FILLED"
-        #           },
-        #           "cursor": "dGVzdGN1cmVzZQo="
-        #         }
-        #       ],
-        #       "page_info": {
-        #         "end_cursor": "dGVzdGN1cmVzZQo=",
-        #         "start_cursor": "dGVzdGN1cmVzZQo=",
-        #         "has_next_page": True,
-        #         "has_previous_page": False
-        #       }
+        #          "data": {
+        #              "edges": [
+        #                  {
+        #                      "node": {
+        #                          "id": 10,
+        #                          "market_id": "ETH-BTC",
+        #                          "price": "10.00",
+        #                          "amount": "10.00",
+        #                          "filled_amount": "9.0",
+        #                          "avg_deal_price": "12.0",
+        #                          "side": "ASK",
+        #                          "state": "FILLED"
+        #                      },
+        #                      "cursor": "dGVzdGN1cmVzZQo="
+        #                  }
+        #              ],
+        #              "page_info": {
+        #                  "end_cursor": "dGVzdGN1cmVzZQo=",
+        #                  "start_cursor": "dGVzdGN1cmVzZQo=",
+        #                  "has_next_page": True,
+        #                  "has_previous_page": False
+        #              }
+        #          }
         #     }
         #
-        orders = self.safe_value(response, 'edges', [])
+        data = self.safe_value(response, 'data', {})
+        orders = self.safe_value(data, 'edges', [])
         result = []
         for i in range(0, len(orders)):
             result.append(self.parse_order(orders[i]['node'], market))
         return self.filter_by_symbol_since_limit(result, symbol, since, limit)
 
+    def parse_order_status(self, status):
+        statuses = {
+            'PENDING': 'open',
+            'FILLED': 'closed',
+            'CANCELED': 'canceled',
+        }
+        return self.safe_string(statuses, status)
+
     def fetch_open_orders(self, symbol=None, since=None, limit=None, params={}):
-        return self.fetch_orders(symbol, since, limit, self.extend({
+        request = {
             'state': 'PENDING',
-        }, params))
+        }
+        return self.fetch_orders(symbol, since, limit, self.extend(request, params))
 
     def fetch_closed_orders(self, symbol=None, since=None, limit=None, params={}):
-        return self.fetch_orders(symbol, since, limit, self.extend({
+        request = {
             'state': 'FILLED',
-        }, params))
+        }
+        return self.fetch_orders(symbol, since, limit, self.extend(request, params))
+
+    def nonce(self):
+        return self.microseconds() * 1000
 
     def sign(self, path, api='public', method='GET', params={}, headers=None, body=None):
         query = self.omit(params, self.extract_params(path))
@@ -575,13 +612,13 @@ class bigone (Exchange):
                 url += '?' + self.urlencode(query)
         else:
             self.check_required_credentials()
-            nonce = self.nonce() * 1000000000
+            nonce = self.nonce()
             request = {
                 'type': 'OpenAPI',
                 'sub': self.apiKey,
                 'nonce': nonce,
             }
-            jwt = self.jwt(request, self.secret)
+            jwt = self.jwt(request, self.encode(self.secret))
             headers = {
                 'Authorization': 'Bearer ' + jwt,
             }
@@ -593,27 +630,29 @@ class bigone (Exchange):
                 body = self.json(query)
         return {'url': url, 'method': method, 'body': body, 'headers': headers}
 
-    def handle_errors(self, httpCode, reason, url, method, headers, body):
-        if not isinstance(body, basestring):
+    def handle_errors(self, httpCode, reason, url, method, headers, body, response):
+        if response is None:
             return  # fallback to default error handler
-        if len(body) < 2:
-            return  # fallback to default error handler
-        if (body[0] == '{') or (body[0] == '['):
-            response = json.loads(body)
-            #
-            #      {"errors":{"detail":"Internal server error"}}
-            #
-            error = self.safe_value(response, 'error')
-            errors = self.safe_value(response, 'errors')
-            data = self.safe_value(response, 'data')
-            if error is not None or errors is not None or data is None:
-                feedback = self.id + ' ' + self.json(response)
+        #
+        #      {"errors":{"detail":"Internal server error"}}
+        #      {"errors":[{"message":"invalid nonce, nonce should be a 19bits number","code":10030}],"data":null}
+        #
+        error = self.safe_value(response, 'error')
+        errors = self.safe_value(response, 'errors')
+        data = self.safe_value(response, 'data')
+        if error is not None or errors is not None or data is None:
+            feedback = self.id + ' ' + self.json(response)
+            code = None
+            if error is not None:
                 code = self.safe_integer(error, 'code')
-                exceptions = self.exceptions['codes']
-                if errors is not None:
+            exceptions = self.exceptions['codes']
+            if errors is not None:
+                if isinstance(errors, list):
+                    code = self.safe_string(errors[0], 'code')
+                else:
                     code = self.safe_string(errors, 'detail')
                     exceptions = self.exceptions['detail']
-                if code in exceptions:
-                    raise exceptions[code](feedback)
-                else:
-                    raise ExchangeError(feedback)
+            if code in exceptions:
+                raise exceptions[code](feedback)
+            else:
+                raise ExchangeError(feedback)

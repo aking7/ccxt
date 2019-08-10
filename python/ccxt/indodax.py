@@ -4,17 +4,11 @@
 # https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 from ccxt.base.exchange import Exchange
-
-# -----------------------------------------------------------------------------
-
-try:
-    basestring  # Python 3
-except NameError:
-    basestring = str  # Python 2
 import hashlib
-import json
 from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import AuthenticationError
+from ccxt.base.errors import ArgumentsRequired
+from ccxt.base.errors import BadRequest
 from ccxt.base.errors import InsufficientFunds
 from ccxt.base.errors import InvalidOrder
 from ccxt.base.errors import OrderNotFound
@@ -48,6 +42,7 @@ class indodax (Exchange):
                 },
                 'www': 'https://www.indodax.com',
                 'doc': 'https://indodax.com/downloads/BITCOINCOID-API-DOCUMENTATION.pdf',
+                'referral': 'https://indodax.com/ref/testbitcoincoid/1',
             },
             'api': {
                 'public': {
@@ -72,21 +67,29 @@ class indodax (Exchange):
                 },
             },
             'markets': {
+                # HARDCODING IS DEPRECATED
+                # but they don't have a corresponding endpoint in their API
                 'BTC/IDR': {'id': 'btc_idr', 'symbol': 'BTC/IDR', 'base': 'BTC', 'quote': 'IDR', 'baseId': 'btc', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.0001, 'max': None}}},
                 'ACT/IDR': {'id': 'act_idr', 'symbol': 'ACT/IDR', 'base': 'ACT', 'quote': 'IDR', 'baseId': 'act', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': None, 'max': None}}},
                 'ADA/IDR': {'id': 'ada_idr', 'symbol': 'ADA/IDR', 'base': 'ADA', 'quote': 'IDR', 'baseId': 'ada', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': None, 'max': None}}},
                 'BCD/IDR': {'id': 'bcd_idr', 'symbol': 'BCD/IDR', 'base': 'BCD', 'quote': 'IDR', 'baseId': 'bcd', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': None, 'max': None}}},
                 'BCH/IDR': {'id': 'bch_idr', 'symbol': 'BCH/IDR', 'base': 'BCH', 'quote': 'IDR', 'baseId': 'bch', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.001, 'max': None}}},
                 'BTG/IDR': {'id': 'btg_idr', 'symbol': 'BTG/IDR', 'base': 'BTG', 'quote': 'IDR', 'baseId': 'btg', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.01, 'max': None}}},
+                'BTS/IDR': {'id': 'bts_idr', 'symbol': 'BTS/IDR', 'base': 'BTS', 'quote': 'IDR', 'baseId': 'bts', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.01, 'max': None}}},
+                'DASH/IDR': {'id': 'drk_idr', 'symbol': 'DASH/IDR', 'base': 'DASH', 'quote': 'IDR', 'baseId': 'drk', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.01, 'max': None}}},
+                'DOGE/IDR': {'id': 'doge_idr', 'symbol': 'DOGE/IDR', 'base': 'DOGE', 'quote': 'IDR', 'baseId': 'doge', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 1000, 'max': None}}},
                 'ETH/IDR': {'id': 'eth_idr', 'symbol': 'ETH/IDR', 'base': 'ETH', 'quote': 'IDR', 'baseId': 'eth', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.01, 'max': None}}},
                 'ETC/IDR': {'id': 'etc_idr', 'symbol': 'ETC/IDR', 'base': 'ETC', 'quote': 'IDR', 'baseId': 'etc', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.1, 'max': None}}},
+                'GSC/IDR': {'id': 'gsc_idr', 'symbol': 'GSC/IDR', 'base': 'GSC', 'quote': 'IDR', 'baseId': 'gsc', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.1, 'max': None}}},
                 'IGNIS/IDR': {'id': 'ignis_idr', 'symbol': 'IGNIS/IDR', 'base': 'IGNIS', 'quote': 'IDR', 'baseId': 'ignis', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 1, 'max': None}}},
                 'LTC/IDR': {'id': 'ltc_idr', 'symbol': 'LTC/IDR', 'base': 'LTC', 'quote': 'IDR', 'baseId': 'ltc', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.01, 'max': None}}},
-                'STQ/IDR': {'id': 'stq_idr', 'symbol': 'STQ/IDR', 'base': 'STQ', 'quote': 'IDR', 'baseId': 'stq', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': None, 'max': None}}},
+                'NPXS/IDR': {'id': 'npxs_idr', 'symbol': 'NPXS/IDR', 'base': 'NPXS', 'quote': 'IDR', 'baseId': 'npxs', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 1, 'max': None}}},
                 'NXT/IDR': {'id': 'nxt_idr', 'symbol': 'NXT/IDR', 'base': 'NXT', 'quote': 'IDR', 'baseId': 'nxt', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 5, 'max': None}}},
+                'STQ/IDR': {'id': 'stq_idr', 'symbol': 'STQ/IDR', 'base': 'STQ', 'quote': 'IDR', 'baseId': 'stq', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': None, 'max': None}}},
                 'TEN/IDR': {'id': 'ten_idr', 'symbol': 'TEN/IDR', 'base': 'TEN', 'quote': 'IDR', 'baseId': 'ten', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 5, 'max': None}}},
                 'TRX/IDR': {'id': 'trx_idr', 'symbol': 'TRX/IDR', 'base': 'TRX', 'quote': 'IDR', 'baseId': 'trx', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': None, 'max': None}}},
                 'WAVES/IDR': {'id': 'waves_idr', 'symbol': 'WAVES/IDR', 'base': 'WAVES', 'quote': 'IDR', 'baseId': 'waves', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.1, 'max': None}}},
+                'XEM/IDR': {'id': 'nem_idr', 'symbol': 'XEM/IDR', 'base': 'XEM', 'quote': 'IDR', 'baseId': 'nem', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 1, 'max': None}}},
                 'XLM/IDR': {'id': 'str_idr', 'symbol': 'XLM/IDR', 'base': 'XLM', 'quote': 'IDR', 'baseId': 'str', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 20, 'max': None}}},
                 'XRP/IDR': {'id': 'xrp_idr', 'symbol': 'XRP/IDR', 'base': 'XRP', 'quote': 'IDR', 'baseId': 'xrp', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 10, 'max': None}}},
                 'XZC/IDR': {'id': 'xzc_idr', 'symbol': 'XZC/IDR', 'base': 'XZC', 'quote': 'IDR', 'baseId': 'xzc', 'quoteId': 'idr', 'precision': {'amount': 8, 'price': 0}, 'limits': {'amount': {'min': 0.1, 'max': None}}},
@@ -109,40 +112,69 @@ class indodax (Exchange):
                     'taker': 0.003,
                 },
             },
+            'exceptions': {
+                'exact': {
+                    'invalid_pair': BadRequest,  # {"error":"invalid_pair","error_description":"Invalid Pair"}
+                    'Insufficient balance.': InsufficientFunds,
+                    'invalid order.': OrderNotFound,
+                    'Invalid credentials. API not found or session has expired.': AuthenticationError,
+                    'Invalid credentials. Bad sign.': AuthenticationError,
+                },
+                'broad': {
+                    'Minimum price': InvalidOrder,
+                    'Minimum order': InvalidOrder,
+                },
+            },
         })
 
     def fetch_balance(self, params={}):
         self.load_markets()
-        response = self.privatePostGetInfo()
-        balance = response['return']
-        result = {'info': balance}
-        codes = list(self.currencies.keys())
-        for i in range(0, len(codes)):
-            code = codes[i]
-            currency = self.currencies[code]
-            lowercase = currency['id']
+        response = self.privatePostGetInfo(params)
+        balances = self.safe_value(response, 'return', {})
+        free = self.safe_value(balances, 'balance', {})
+        used = self.safe_value(balances, 'balance_hold', {})
+        result = {'info': response}
+        currencyIds = list(free.keys())
+        for i in range(0, len(currencyIds)):
+            currencyId = currencyIds[i]
+            code = self.safe_currency_code(currencyId)
             account = self.account()
-            account['free'] = self.safe_float(balance['balance'], lowercase, 0.0)
-            account['used'] = self.safe_float(balance['balance_hold'], lowercase, 0.0)
-            account['total'] = self.sum(account['free'], account['used'])
+            account['free'] = self.safe_float(free, currencyId)
+            account['used'] = self.safe_float(used, currencyId)
             result[code] = account
         return self.parse_balance(result)
 
     def fetch_order_book(self, symbol, limit=None, params={}):
         self.load_markets()
-        orderbook = self.publicGetPairDepth(self.extend({
+        request = {
             'pair': self.market_id(symbol),
-        }, params))
+        }
+        orderbook = self.publicGetPairDepth(self.extend(request, params))
         return self.parse_order_book(orderbook, None, 'buy', 'sell')
 
     def fetch_ticker(self, symbol, params={}):
         self.load_markets()
         market = self.market(symbol)
-        response = self.publicGetPairTicker(self.extend({
+        request = {
             'pair': market['id'],
-        }, params))
+        }
+        response = self.publicGetPairTicker(self.extend(request, params))
+        #
+        #     {
+        #         "ticker": {
+        #             "high":"0.01951",
+        #             "low":"0.01877",
+        #             "vol_eth":"39.38839319",
+        #             "vol_btc":"0.75320886",
+        #             "last":"0.01896",
+        #             "buy":"0.01896",
+        #             "sell":"0.019",
+        #             "server_time":1565248908
+        #         }
+        #     }
+        #
         ticker = response['ticker']
-        timestamp = self.safe_float(ticker, 'server_time') * 1000
+        timestamp = self.safe_timestamp(ticker, 'server_time')
         baseVolume = 'vol_' + market['baseId'].lower()
         quoteVolume = 'vol_' + market['quoteId'].lower()
         last = self.safe_float(ticker, 'last')
@@ -164,31 +196,48 @@ class indodax (Exchange):
             'change': None,
             'percentage': None,
             'average': None,
-            'baseVolume': float(ticker[baseVolume]),
-            'quoteVolume': float(ticker[quoteVolume]),
+            'baseVolume': self.safe_float(ticker, baseVolume),
+            'quoteVolume': self.safe_float(ticker, quoteVolume),
             'info': ticker,
         }
 
-    def parse_trade(self, trade, market):
-        timestamp = int(trade['date']) * 1000
+    def parse_trade(self, trade, market=None):
+        timestamp = self.safe_timestamp(trade, 'date')
+        id = self.safe_string(trade, 'tid')
+        symbol = None
+        if market is not None:
+            symbol = market['symbol']
+        type = None
+        side = self.safe_string(trade, 'type')
+        price = self.safe_float(trade, 'price')
+        amount = self.safe_float(trade, 'amount')
+        cost = None
+        if price is not None:
+            if amount is not None:
+                cost = price * amount
         return {
-            'id': trade['tid'],
+            'id': id,
             'info': trade,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
-            'symbol': market['symbol'],
-            'type': None,
-            'side': trade['type'],
-            'price': self.safe_float(trade, 'price'),
-            'amount': self.safe_float(trade, 'amount'),
+            'symbol': symbol,
+            'type': type,
+            'side': side,
+            'order': None,
+            'takerOrMaker': None,
+            'price': price,
+            'amount': amount,
+            'cost': cost,
+            'fee': None,
         }
 
     def fetch_trades(self, symbol, since=None, limit=None, params={}):
         self.load_markets()
         market = self.market(symbol)
-        response = self.publicGetPairTrades(self.extend({
+        request = {
             'pair': market['id'],
-        }, params))
+        }
+        response = self.publicGetPairTrades(self.extend(request, params))
         return self.parse_trades(response, market, since, limit)
 
     def parse_order(self, order, market=None):
@@ -229,11 +278,12 @@ class indodax (Exchange):
         average = None
         if filled:
             average = cost / filled
-        timestamp = int(order['submit_time'])
+        timestamp = self.safe_integer(order, 'submit_time')
         fee = None
-        result = {
+        id = self.safe_string(order, 'order_id')
+        return {
             'info': order,
-            'id': order['order_id'],
+            'id': id,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
             'lastTradeTimestamp': None,
@@ -249,17 +299,17 @@ class indodax (Exchange):
             'status': status,
             'fee': fee,
         }
-        return result
 
     def fetch_order(self, id, symbol=None, params={}):
         if symbol is None:
             raise ExchangeError(self.id + ' fetchOrder requires a symbol')
         self.load_markets()
         market = self.market(symbol)
-        response = self.privatePostGetOrder(self.extend({
+        request = {
             'pair': market['id'],
             'order_id': id,
-        }, params))
+        }
+        response = self.privatePostGetOrder(self.extend(request, params))
         orders = response['return']
         order = self.parse_order(self.extend({'id': id}, orders['order']), market)
         return self.extend({'info': response}, order)
@@ -311,18 +361,18 @@ class indodax (Exchange):
             raise ExchangeError(self.id + ' allows limit orders only')
         self.load_markets()
         market = self.market(symbol)
-        order = {
+        request = {
             'pair': market['id'],
             'type': side,
             'price': price,
         }
         currency = market['baseId']
         if side == 'buy':
-            order[market['quoteId']] = amount * price
+            request[market['quoteId']] = amount * price
         else:
-            order[market['baseId']] = amount
-        order[currency] = amount
-        result = self.privatePostTrade(self.extend(order, params))
+            request[market['baseId']] = amount
+        request[currency] = amount
+        result = self.privatePostTrade(self.extend(request, params))
         return {
             'info': result,
             'id': str(result['return']['order_id']),
@@ -330,17 +380,18 @@ class indodax (Exchange):
 
     def cancel_order(self, id, symbol=None, params={}):
         if symbol is None:
-            raise ExchangeError(self.id + ' cancelOrder requires a symbol argument')
+            raise ArgumentsRequired(self.id + ' cancelOrder requires a symbol argument')
         side = self.safe_value(params, 'side')
         if side is None:
             raise ExchangeError(self.id + ' cancelOrder requires an extra "side" param')
         self.load_markets()
         market = self.market(symbol)
-        return self.privatePostCancelOrder(self.extend({
+        request = {
             'order_id': id,
             'pair': market['id'],
-            'type': params['side'],
-        }, params))
+            'type': side,
+        }
+        return self.privatePostCancelOrder(self.extend(request, params))
 
     def withdraw(self, code, amount, address, tag=None, params={}):
         self.check_address(address)
@@ -402,37 +453,29 @@ class indodax (Exchange):
             }
         return {'url': url, 'method': method, 'body': body, 'headers': headers}
 
-    def handle_errors(self, code, reason, url, method, headers, body, response=None):
-        if not isinstance(body, basestring):
+    def handle_errors(self, code, reason, url, method, headers, body, response):
+        if response is None:
             return
         # {success: 0, error: "invalid order."}
         # or
         # [{data, ...}, {...}, ...]
-        if response is None:
-            if body[0] == '{' or body[0] == '[':
-                response = json.loads(body)
         if isinstance(response, list):
             return  # public endpoints may return []-arrays
-        if not('success' in list(response.keys())):
+        error = self.safe_value(response, 'error', '')
+        if not('success' in list(response.keys())) and error == '':
             return  # no 'success' property on public responses
-        if response['success'] == 1:
+        if self.safe_integer(response, 'success', 0) == 1:
             # {success: 1, return: {orders: []}}
             if not('return' in list(response.keys())):
                 raise ExchangeError(self.id + ': malformed response: ' + self.json(response))
             else:
                 return
-        message = response['error']
-        feedback = self.id + ' ' + self.json(response)
-        if message == 'Insufficient balance.':
-            raise InsufficientFunds(feedback)
-        elif message == 'invalid order.':
-            raise OrderNotFound(feedback)  # cancelOrder(1)
-        elif message.find('Minimum price ') >= 0:
-            raise InvalidOrder(feedback)  # price < limits.price.min, on createLimitBuyOrder('ETH/BTC', 1, 0)
-        elif message.find('Minimum order ') >= 0:
-            raise InvalidOrder(feedback)  # cost < limits.cost.min on createLimitBuyOrder('ETH/BTC', 0, 1)
-        elif message == 'Invalid credentials. API not found or session has expired.':
-            raise AuthenticationError(feedback)  # on bad apiKey
-        elif message == 'Invalid credentials. Bad sign.':
-            raise AuthenticationError(feedback)  # on bad secret
-        raise ExchangeError(self.id + ': unknown error: ' + self.json(response))
+        feedback = self.id + ' ' + body
+        exact = self.exceptions['exact']
+        if error in exact:
+            raise exact[error](feedback)
+        broad = self.exceptions['broad']
+        broadKey = self.findBroadlyMatchedKey(broad, error)
+        if broadKey is not None:
+            raise broad[broadKey](feedback)
+        raise ExchangeError(feedback)  # unknown message
